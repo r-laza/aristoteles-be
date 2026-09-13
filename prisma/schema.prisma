@@ -1,0 +1,56 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Student {
+  id         Int          @id @default(autoincrement())
+  name       String       @unique
+  initials   String
+  enrollments Enrollment[]
+  activities Activity[]
+}
+
+model Course {
+  id          Int          @id @default(autoincrement())
+  name        String       @unique
+  teacher     String
+  image       String       @default("/images/course-placeholder.jpg")
+  enrollments Enrollment[]
+  tasks       Task[]
+  activities  Activity[]
+}
+
+model Enrollment {
+  id        Int     @id @default(autoincrement())
+  studentId Int
+  courseId  Int
+  progress  Int     @default(0)
+  student   Student @relation(fields: [studentId], references: [id])
+  course    Course  @relation(fields: [courseId], references: [id])
+
+  @@unique([studentId, courseId])
+}
+
+model Task {
+  id        Int      @id @default(autoincrement())
+  courseId  Int
+  title     String
+  dueAt     DateTime
+  status    String   @default("pending")
+  course    Course   @relation(fields: [courseId], references: [id])
+}
+
+model Activity {
+  id        Int      @id @default(autoincrement())
+  studentId Int
+  courseId  Int?
+  title     String
+  createdAt DateTime @default(now())
+  student   Student  @relation(fields: [studentId], references: [id])
+  course    Course?  @relation(fields: [courseId], references: [id])
+}
