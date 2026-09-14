@@ -54,7 +54,7 @@ async function main() {
     },
   });
 
-  await prisma.enrollment.upsert({
+  await prisma.courseEnrollment.upsert({
     where: {
       studentId_courseId: {
         studentId: student.id,
@@ -65,7 +65,7 @@ async function main() {
     create: { studentId: student.id, courseId: math.id, progress: 70 },
   });
 
-  await prisma.enrollment.upsert({
+  await prisma.courseEnrollment.upsert({
     where: {
       studentId_courseId: {
         studentId: student.id,
@@ -76,7 +76,7 @@ async function main() {
     create: { studentId: student.id, courseId: communication.id, progress: 45 },
   });
 
-  await prisma.enrollment.upsert({
+  await prisma.courseEnrollment.upsert({
     where: {
       studentId_courseId: {
         studentId: student.id,
