@@ -1,8 +1,20 @@
 import { PrismaClient } from '@prisma/client';
+import { hashPassword } from '../src/auth/password';
 
 const prisma = new PrismaClient();
 
 async function main() {
+  await prisma.user.upsert({
+    where: { username: 'admin' },
+    update: {},
+    create: {
+      username: 'admin',
+      passwordHash: await hashPassword('admin2026'),
+      fullName: 'Administrador',
+      role: 'ADMIN',
+      isActive: true,
+    },
+  });
   const student = await prisma.student.upsert({
     where: { name: 'Carlos Sánchez' },
     update: {},
@@ -79,25 +91,69 @@ async function main() {
   taskBaseDate.setHours(18, 0, 0, 0);
 
   const tasks = [
-    { courseId: math.id, title: 'Práctica de funciones', dueAt: new Date(taskBaseDate.getTime() + 86400000), status: 'pending' },
-    { courseId: communication.id, title: 'Ensayo argumentativo', dueAt: new Date(taskBaseDate.getTime() + 172800000), status: 'pending' },
-    { courseId: physics.id, title: 'Informe de laboratorio', dueAt: new Date(taskBaseDate.getTime() + 259200000), status: 'pending' },
-    { courseId: math.id, title: 'Cuestionario de álgebra', dueAt: new Date(taskBaseDate.getTime() + 432000000), status: 'pending' },
+    {
+      courseId: math.id,
+      title: 'Práctica de funciones',
+      dueAt: new Date(taskBaseDate.getTime() + 86400000),
+      status: 'pending',
+    },
+    {
+      courseId: communication.id,
+      title: 'Ensayo argumentativo',
+      dueAt: new Date(taskBaseDate.getTime() + 172800000),
+      status: 'pending',
+    },
+    {
+      courseId: physics.id,
+      title: 'Informe de laboratorio',
+      dueAt: new Date(taskBaseDate.getTime() + 259200000),
+      status: 'pending',
+    },
+    {
+      courseId: math.id,
+      title: 'Cuestionario de álgebra',
+      dueAt: new Date(taskBaseDate.getTime() + 432000000),
+      status: 'pending',
+    },
   ];
 
   for (const task of tasks) {
-    await prisma.task.create({ data: task });
+    if (
+      !(await prisma.task.findFirst({
+        where: { courseId: task.courseId, title: task.title },
+      }))
+    ) {
+      await prisma.task.create({ data: task });
+    }
   }
 
   const activityItems = [
-    { studentId: student.id, courseId: math.id, title: 'Completaste la lección de ecuaciones' },
-    { studentId: student.id, courseId: communication.id, title: 'Publicaste tu actividad de debate' },
-    { studentId: student.id, courseId: physics.id, title: 'Revisaste la guía de movimiento' },
-    { studentId: student.id, courseId: math.id, title: 'Subiste una tarea de repaso' },
+    {
+      studentId: student.id,
+      courseId: math.id,
+      title: 'Completaste la lección de ecuaciones',
+    },
+    {
+      studentId: student.id,
+      courseId: communication.id,
+      title: 'Publicaste tu actividad de debate',
+    },
+    {
+      studentId: student.id,
+      courseId: physics.id,
+      title: 'Revisaste la guía de movimiento',
+    },
+    {
+      studentId: student.id,
+      courseId: math.id,
+      title: 'Subiste una tarea de repaso',
+    },
   ];
 
   for (const item of activityItems) {
-    await prisma.activity.create({ data: item });
+    if (!(await prisma.activity.findFirst({ where: item }))) {
+      await prisma.activity.create({ data: item });
+    }
   }
 }
 
