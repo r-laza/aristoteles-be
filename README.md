@@ -50,15 +50,26 @@ Las pruebas e2e requieren la base migrada y el seed. Crean cuentas con un prefij
 
 El módulo usa PostgreSQL. Tras actualizar: `npx prisma generate` y `npx prisma migrate deploy`.
 
-Todas estas rutas requieren `ADMIN`:
+All cycle and catalog endpoints require `ADMIN`:
 
-- `GET/POST /api/admin/cycles`: listar y crear ciclos (`name`, `startDate`, `endDate`, `baseEnrollmentAmount`). Las fechas usan `YYYY-MM-DD` y los importes admiten dos decimales.
-- `GET /api/admin/cycles/:id`: ciclo con cantidades de grupos e inscritos.
-- `GET/POST /api/admin/cycles/:id/groups`: listar y crear grupos (`name`).
-- `GET /api/admin/cycles/:id/available-students`: estudiantes activos aún no inscritos en ese ciclo.
-- `GET/POST /api/admin/cycles/:id/enrollments`: listar e inscribir (`studentId`, `groupId`, `discountAmount` opcional y `discountReason` opcional).
+- `GET /api/admin/cycles`: list cycles and enrollment/group counts.
+- `POST /api/admin/cycles` and `POST /api/admin/cycles/:id`: create or edit a complete cycle atomically. Body: `{ name, startDate, endDate, groups: [{ groupId, feeIds: [1] }] }`. Dates use `YYYY-MM-DD`; at least one group and exactly one fee per group are required. `groupId` here identifies a reusable group.
+- `GET /api/admin/cycles/:id`: cycle metadata and counts.
+- `GET/POST /api/admin/groups`: list/create reusable groups (`name`).
+- `POST /api/admin/groups/:id`: rename a reusable group across its cycles.
+- `POST /api/admin/groups/:id/delete`: delete an unused group; returns 409 if assigned to any cycle and 404 if missing. The group catalog includes `_count.cycles`. Groups currently have no inactive state; all catalog groups are available for assignment.
+- `GET/POST /api/admin/fees`: list/create reusable enrollment fees (`name`, `amount`, `validFrom`, optional `validUntil`). Amounts allow up to two decimal places.
+- `POST /api/admin/fees/:id`: edit a fee across its assignments. Existing enrollment amounts remain unchanged.
+- `POST /api/admin/fees/:id/delete`: delete an unused fee. Returns 409 if group assignments or historical enrollments reference it, and 404 if missing. Deletion locks the fee row to protect concurrent assignments. The fee catalog includes `_count.cycleGroups` and `_count.enrollments` for usage and deletion feedback.
+- `GET /api/admin/cycles/:id/groups`: list cycle assignments and their selected fees. The former group/fee creation endpoints under a cycle are replaced by the catalog and complete-cycle endpoints above.
+- `GET /api/admin/cycles/:id/available-students`: active students not enrolled in this cycle.
+- `GET/POST /api/admin/cycles/:id/enrollments`: list/enroll students (`studentId`, `groupId`: cycle assignment ID, `feeId`, optional `discountAmount` and `discountReason`).
 
-`Enrollment` relaciona `User`, `AcademicCycle` y `Group`; no se agregan ciclo ni grupo a `User`. El importe base se copia del ciclo y el total se calcula en el servidor con Decimal. La base de datos impide duplicar estudiante/ciclo, asignar grupos de otro ciclo y almacenar importes inconsistentes. No se implementan pagos.
+`Group` and `EnrollmentFee` are independent reusable catalogs. `CycleGroup` relates a group to a cycle; its fee relationship stores exactly one selected matrícula for each group and cycle when creating or editing. The API retains the `feeIds` array format but rejects arrays whose length is not one. Assigning catalogs never copies their records. Cycle edits preserve existing assignment IDs. Groups with enrolled students cannot be removed (HTTP 409); the assigned fee can be replaced while historical enrollments retain their fee reference and stored amounts.
+
+Enrollment validates the selected group's cycle and fee assignment, copies the fee amount, and computes the final amount with Decimal on the server. Fee validity includes both endpoints using Ecuador's calendar date (`America/Guayaquil`). Database constraints prevent duplicate group/cycle and student/cycle relationships and inconsistent stored amounts.
+
+Migration `20260916000000_reusable_fees` moves existing fee assignments into the join table without changing fee IDs, enrollment amounts, or payments. Existing fees are retained individually, since matching names or prices do not establish that they are the same business entity.
 
 La relación histórica entre alumnos de demostración y cursos se llama ahora `CourseEnrollment` en Prisma y conserva su tabla original `Enrollment`. Las matrículas académicas usan la tabla `AcademicEnrollment`, sin borrar datos del dashboard estudiantil.
 

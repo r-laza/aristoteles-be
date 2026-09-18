@@ -26,11 +26,14 @@ export class CyclesController {
   @Get(':id/groups') groups(@Param('id', ParseIntPipe) id: number) {
     return this.cycles.groups(id);
   }
-  @Post(':id/groups') createGroup(
+  @Post(':id/delete') delete(@Param('id', ParseIntPipe) id: number) {
+    return this.cycles.deleteCycle(id);
+  }
+  @Post(':id') edit(
     @Param('id', ParseIntPipe) id: number,
     @Body() body: unknown,
   ) {
-    return this.cycles.createGroup(id, body);
+    return this.cycles.create(body, id);
   }
   @Get(':id/available-students') available(
     @Param('id', ParseIntPipe) id: number,
@@ -47,5 +50,48 @@ export class CyclesController {
     return this.cycles.enroll(id, body);
   }
 }
-@Module({ controllers: [CyclesController], providers: [CyclesService] })
+@Controller('admin/groups')
+@Roles('ADMIN')
+export class GroupsController {
+  constructor(private readonly cycles: CyclesService) {}
+  @Get() list() {
+    return this.cycles.reusableGroups();
+  }
+  @Post() create(@Body() body: unknown) {
+    return this.cycles.saveGroup(body);
+  }
+  @Post(':id/delete') delete(@Param('id', ParseIntPipe) id: number) {
+    return this.cycles.deleteGroup(id);
+  }
+  @Post(':id') edit(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: unknown,
+  ) {
+    return this.cycles.saveGroup(body, id);
+  }
+}
+@Controller('admin/fees')
+@Roles('ADMIN')
+export class FeesController {
+  constructor(private readonly cycles: CyclesService) {}
+  @Get() list() {
+    return this.cycles.reusableFees();
+  }
+  @Post() create(@Body() body: unknown) {
+    return this.cycles.saveFee(body);
+  }
+  @Post(':id/delete') delete(@Param('id', ParseIntPipe) id: number) {
+    return this.cycles.deleteFee(id);
+  }
+  @Post(':id') edit(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: unknown,
+  ) {
+    return this.cycles.saveFee(body, id);
+  }
+}
+@Module({
+  controllers: [CyclesController, GroupsController, FeesController],
+  providers: [CyclesService],
+})
 export class CyclesModule {}

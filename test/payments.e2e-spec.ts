@@ -77,12 +77,22 @@ describe('Enrollment payments (PostgreSQL)', () => {
         name: prefix,
         startDate: new Date('2026-01-01'),
         endDate: new Date('2026-12-31'),
-        baseEnrollmentAmount: 600,
       },
     });
     cycleId = cycle.id;
-    const group = await prisma.group.create({
-      data: { name: 'Leones', academicCycleId: cycleId },
+    const group = await prisma.cycleGroup.create({
+      data: {
+        reusableGroup: { create: { name: prefix } },
+        academicCycle: { connect: { id: cycleId } },
+      },
+    });
+    const fee = await prisma.enrollmentFee.create({
+      data: {
+        cycleGroups: { connect: { id: group.id } },
+        name: 'Regular',
+        amount: 600,
+        validFrom: new Date('2020-01-01'),
+      },
     });
     enrollmentId = (
       await prisma.enrollment.create({
@@ -90,6 +100,7 @@ describe('Enrollment payments (PostgreSQL)', () => {
           studentId,
           academicCycleId: cycleId,
           groupId: group.id,
+          feeId: fee.id,
           baseAmount: 600,
           discountAmount: 100,
           finalAmount: 500,
@@ -110,6 +121,7 @@ describe('Enrollment payments (PostgreSQL)', () => {
           studentId: freeUser.id,
           academicCycleId: cycleId,
           groupId: group.id,
+          feeId: fee.id,
           baseAmount: 600,
           discountAmount: 600,
           finalAmount: 0,
@@ -125,9 +137,13 @@ describe('Enrollment payments (PostgreSQL)', () => {
       await prisma.enrollment.deleteMany({
         where: { academicCycle: { name: prefix } },
       });
-      await prisma.group.deleteMany({
+      await prisma.enrollmentFee.deleteMany({
+        where: { cycleGroups: { some: { academicCycle: { name: prefix } } } },
+      });
+      await prisma.cycleGroup.deleteMany({
         where: { academicCycle: { name: prefix } },
       });
+      await prisma.group.deleteMany({ where: { name: prefix } });
       await prisma.academicCycle.deleteMany({ where: { name: prefix } });
       await prisma.user.deleteMany({
         where: { username: { startsWith: prefix } },

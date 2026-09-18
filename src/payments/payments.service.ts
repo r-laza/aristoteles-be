@@ -32,7 +32,9 @@ export class PaymentsService {
         discountAmount: true,
         finalAmount: true,
         student: { select: { id: true, fullName: true, username: true } },
-        group: { select: { id: true, name: true } },
+        group: {
+          select: { id: true, reusableGroup: { select: { name: true } } },
+        },
         payments: { select: { amount: true } },
       },
       orderBy: { student: { fullName: 'asc' } },
@@ -46,6 +48,10 @@ export class PaymentsService {
         const balance = amountDue.minus(amountPaid);
         return {
           ...enrollment,
+          group: {
+            id: enrollment.group.id,
+            name: enrollment.group.reusableGroup.name,
+          },
           amountDue,
           amountPaid,
           balance,
