@@ -16,6 +16,7 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
   let admin: string[], studentCookie: string[], teacherCookie: string[];
   let studentId: number, teacherId: number;
   let reusableId: number, betaId: number, feeId: number, otherFeeId: number;
+  let pensionId: number, otherPensionId: number;
   let cycleId: number, otherId: number, groupId: number, otherGroupId: number;
   const post = (path: string, cookie = admin) =>
     request(app.getHttpServer())
@@ -70,14 +71,17 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
       const where = { academicCycle: { name: { startsWith: prefix } } };
       await prisma.payment.deleteMany({ where: { enrollment: where } });
       await prisma.enrollment.deleteMany({ where });
-      await prisma.enrollmentFee.deleteMany({
-        where: { name: { startsWith: prefix } },
-      });
       await prisma.cycleGroup.deleteMany({ where });
       await prisma.group.deleteMany({
         where: { name: { startsWith: prefix } },
       });
       await prisma.academicCycle.deleteMany({
+        where: { name: { startsWith: prefix } },
+      });
+      await prisma.enrollmentFee.deleteMany({
+        where: { name: { startsWith: prefix } },
+      });
+      await prisma.pension.deleteMany({
         where: { name: { startsWith: prefix } },
       });
       await prisma.user.deleteMany({
@@ -92,13 +96,19 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
       .post(`/api/admin/fees${path}`)
       .set('X-Requested-With', 'Aristoteles')
       .set('Cookie', cookie);
+  const pensionPost = (path = '', cookie = admin) =>
+    request(app.getHttpServer())
+      .post(`/api/admin/pensions${path}`)
+      .set('X-Requested-With', 'Aristoteles')
+      .set('Cookie', cookie);
   const payload = () => ({
+    feeId,
     name: prefix,
     startDate: '2026-01-01',
     endDate: '2027-12-31',
     groups: [
-      { groupId: reusableId, feeIds: [feeId] },
-      { groupId: betaId, feeIds: [feeId] },
+      { groupId: reusableId, pensionId },
+      { groupId: betaId, pensionId: otherPensionId },
     ],
   });
   it('creates independent catalogs and reuses the same records across groups and cycles', async () => {
@@ -133,6 +143,30 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
             name: `${prefix}-siblings`,
             amount: '550',
             validFrom: '2020-01-01',
+          })
+          .expect(201)
+      ).body as { id: number }
+    ).id;
+    pensionId = (
+      (
+        await pensionPost()
+          .send({
+            name: `${prefix}-general`,
+            amount: '120',
+            dueDay: 10,
+            isActive: true,
+          })
+          .expect(201)
+      ).body as { id: number }
+    ).id;
+    otherPensionId = (
+      (
+        await pensionPost()
+          .send({
+            name: `${prefix}-school`,
+            amount: '90',
+            dueDay: 15,
+            isActive: true,
           })
           .expect(201)
       ).body as { id: number }
@@ -177,11 +211,19 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
   });
   it('rejects invalid or duplicate assignments atomically and validates dates and fees', async () => {
     for (const change of [
+      { feeId: null },
+      { feeId: 2147483647 },
       { groups: [] },
+      {
+        groups: [
+          { groupId: reusableId, pensionId: [pensionId, otherPensionId] },
+        ],
+      },
+      { groups: [{ groupId: reusableId, pensionId: 2147483647 }] },
       { groups: [{ groupId: reusableId, feeIds: [] }] },
       { groups: [{ groupId: reusableId, feeIds: [feeId, otherFeeId] }] },
       { groups: [{ groupId: reusableId, feeIds: [2147483647] }] },
-      { groups: [{ groupId: 2147483647, feeIds: [feeId] }] },
+      { groups: [{ groupId: 2147483647, pensionId }] },
       { groups: [{ groupId: reusableId, feeIds: [feeId, feeId] }] },
       { groups: [payload().groups[0], payload().groups[0]] },
       { startDate: '2026-02-30' },
@@ -218,9 +260,74 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
     await get('/2147483647').expect(404);
     await post('/2147483647').send(payload()).expect(404);
   });
+  it('validates monthly pensions, reports assignments, edits and protects used pensions', async () => {
+    const groups = (await get(`/${cycleId}/groups`)).body as {
+      reusableGroupId: number;
+      pension: { id: number };
+    }[];
+    expect(
+      groups.find((g) => g.reusableGroupId === reusableId)!.pension.id,
+    ).toBe(pensionId);
+    expect(groups.find((g) => g.reusableGroupId === betaId)!.pension.id).toBe(
+      otherPensionId,
+    );
+    for (const change of [
+      { dueDay: 0 },
+      { dueDay: 32 },
+      { dueDay: 1.5 },
+      { amount: '-1' },
+      { amount: '1.001' },
+      { isActive: 'true' },
+      { name: ' ' },
+    ]) {
+      await pensionPost()
+        .send({
+          name: prefix,
+          amount: '120',
+          dueDay: 10,
+          isActive: true,
+          ...change,
+        })
+        .expect(400);
+    }
+    const catalog = (
+      await request(app.getHttpServer())
+        .get('/api/admin/pensions')
+        .set('Cookie', admin)
+        .expect(200)
+    ).body as { id: number; _count: { cycleGroups: number } }[];
+    expect(catalog.find((p) => p.id === pensionId)!._count.cycleGroups).toBe(2);
+    await pensionPost(`/${pensionId}/delete`).send({}).expect(409);
+    await pensionPost(`/${pensionId}`)
+      .send({
+        name: `${prefix}-edited`,
+        amount: '125.50',
+        dueDay: 31,
+        isActive: false,
+      })
+      .expect(201);
+    expect(
+      (
+        await prisma.pension.findUniqueOrThrow({ where: { id: pensionId } })
+      ).amount.toString(),
+    ).toBe('125.5');
+    const unused = (
+      await pensionPost()
+        .send({
+          name: `${prefix}-unused`,
+          amount: '0',
+          dueDay: 1,
+          isActive: true,
+        })
+        .expect(201)
+    ).body as { id: number };
+    await pensionPost(`/${unused.id}/delete`).send({}).expect(201);
+    await pensionPost(`/${unused.id}/delete`).send({}).expect(404);
+  });
   it('enforces administrator permissions on catalogs and cycle writes', async () => {
     for (const path of [
       '/api/admin/fees',
+      '/api/admin/pensions',
       '/api/admin/groups',
       '/api/admin/cycles',
       `/api/admin/cycles/${cycleId}/groups`,
@@ -233,6 +340,9 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
           .expect(403);
     }
     for (const cookie of [studentCookie, teacherCookie]) {
+      await pensionPost('', cookie).send({}).expect(403);
+      await pensionPost(`/${pensionId}`, cookie).send({}).expect(403);
+      await pensionPost(`/${pensionId}/delete`, cookie).send({}).expect(403);
       await feePost('', cookie).send({}).expect(403);
       await feePost(`/${feeId}`, cookie).send({}).expect(403);
       await groupPost('', cookie).send({}).expect(403);
@@ -293,9 +403,10 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
     await post(`/${cycleId}`)
       .send({
         ...payload(),
+        feeId: otherFeeId,
         groups: [
-          { groupId: reusableId, feeIds: [otherFeeId] },
-          { groupId: betaId, feeIds: [feeId] },
+          { groupId: reusableId, pensionId: otherPensionId },
+          { groupId: betaId, pensionId },
         ],
       })
       .expect(201);
@@ -321,15 +432,16 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
   });
   it('edits dates and assignments without duplicating records or changing historical amounts', async () => {
     await post(`/${cycleId}`)
-      .send({ ...payload(), groups: [{ groupId: betaId, feeIds: [feeId] }] })
+      .send({ ...payload(), groups: [{ groupId: betaId, pensionId }] })
       .expect(409);
     expect((await get(`/${cycleId}/groups`)).body).toHaveLength(2);
     await post(`/${cycleId}`)
       .send({
         ...payload(),
         name: `${prefix}-edited`,
+        feeId: otherFeeId,
         endDate: '2028-01-01',
-        groups: [{ groupId: reusableId, feeIds: [otherFeeId] }],
+        groups: [{ groupId: reusableId, pensionId: otherPensionId }],
       })
       .expect(201);
     const groups = (await get(`/${cycleId}/groups`)).body as {
@@ -380,10 +492,10 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
     const listed = (
       catalog.body as {
         id: number;
-        _count: { cycleGroups: number; enrollments: number };
+        _count: { cycles: number; cycleGroups: number; enrollments: number };
       }[]
     ).find((f) => f.id === feeId)!;
-    expect(listed._count.cycleGroups).toBe(4);
+    expect(listed._count.cycles).toBe(2);
     expect(listed._count.enrollments).toBe(2);
     await feePost(`/${feeId}/delete`).send({}).expect(409);
     expect(
@@ -416,9 +528,10 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
       await post(`/${id}`)
         .send({
           ...payload(),
+          feeId: otherFeeId,
           groups: payload().groups.map((group) => ({
             ...group,
-            feeIds: [otherFeeId],
+            pensionId: otherPensionId,
           })),
         })
         .expect(201);

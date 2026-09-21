@@ -56,6 +56,7 @@ describe('Reusable groups data migration (PostgreSQL)', () => {
     );
     await migrate(target);
     await migrate('20260916000000_reusable_fees');
+    await migrate('20260917000000_pensions');
     expect(await prisma.group.count()).toBe(2);
     expect(await prisma.cycleGroup.count()).toBe(3);
     const assignments = await prisma.cycleGroup.findMany({

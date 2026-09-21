@@ -43,6 +43,7 @@ function id(value: unknown): number {
   return value;
 }
 const cycleInclude = {
+  fee: true,
   _count: { select: { enrollments: true, groups: true } },
 } as const;
 const enrollmentInclude = {
@@ -96,14 +97,10 @@ export class CyclesService {
       throw new BadRequestException('Invalid date range');
     if (!Array.isArray(input.groups) || !input.groups.length)
       throw new BadRequestException('Groups required');
+    const feeId = id(input.feeId);
     const assignments = input.groups.map((value: unknown) => {
       const row = bodyObject(value);
-      if (!Array.isArray(row.feeIds) || row.feeIds.length !== 1)
-        throw new BadRequestException('Exactly one fee per group is required');
-      const feeIds = row.feeIds.map(id);
-      if (new Set(feeIds).size !== feeIds.length)
-        throw new BadRequestException();
-      return { groupId: id(row.groupId), feeIds };
+      return { groupId: id(row.groupId), pensionId: id(row.pensionId) };
     });
     if (
       new Set(assignments.map((row) => row.groupId)).size !== assignments.length
@@ -112,12 +109,12 @@ export class CyclesService {
     try {
       return await this.prisma.$transaction(
         async (tx) => {
+          if (!(await tx.enrollmentFee.findUnique({ where: { id: feeId } })))
+            throw new BadRequestException('Unknown enrollment fee');
           for (const row of assignments) {
             if (
               !(await tx.group.findUnique({ where: { id: row.groupId } })) ||
-              (await tx.enrollmentFee.count({
-                where: { id: { in: row.feeIds } },
-              })) !== row.feeIds.length
+              !(await tx.pension.findUnique({ where: { id: row.pensionId } }))
             )
               throw new BadRequestException('Unknown group or fee');
           }
@@ -126,7 +123,7 @@ export class CyclesService {
             !(await tx.academicCycle.findUnique({ where: { id: cycleId } }))
           )
             throw new NotFoundException();
-          const data = { name: cycleName, startDate, endDate };
+          const data = { name: cycleName, startDate, endDate, feeId };
           const cycle =
             cycleId === undefined
               ? await tx.academicCycle.create({ data })
@@ -144,7 +141,6 @@ export class CyclesService {
             where: { id: { in: removed.map((group) => group.id) } },
           });
           for (const row of assignments) {
-            const fees = row.feeIds.map((id) => ({ id }));
             await tx.cycleGroup.upsert({
               where: {
                 academicCycleId_reusableGroupId: {
@@ -155,9 +151,9 @@ export class CyclesService {
               create: {
                 academicCycleId: cycle.id,
                 reusableGroupId: row.groupId,
-                fees: { connect: fees },
+                pensionId: row.pensionId,
               },
-              update: { fees: { set: fees } },
+              update: { pensionId: row.pensionId, fees: { set: [] } },
             });
           }
           return tx.academicCycle.findUniqueOrThrow({
@@ -171,9 +167,56 @@ export class CyclesService {
       this.rethrowConflict(error);
     }
   }
+  reusablePensions() {
+    return this.prisma.pension.findMany({
+      include: { _count: { select: { cycleGroups: true } } },
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
+    });
+  }
+  async savePension(body: unknown, pensionId?: number) {
+    const input = bodyObject(body);
+    if (
+      typeof input.dueDay !== 'number' ||
+      !Number.isInteger(input.dueDay) ||
+      input.dueDay < 1 ||
+      input.dueDay > 31 ||
+      typeof input.isActive !== 'boolean'
+    )
+      throw new BadRequestException('Invalid pension');
+    const data = {
+      name: name(input.name),
+      amount: money(input.amount),
+      dueDay: input.dueDay,
+      isActive: input.isActive,
+    };
+    if (pensionId === undefined) return this.prisma.pension.create({ data });
+    if (!(await this.prisma.pension.findUnique({ where: { id: pensionId } })))
+      throw new NotFoundException();
+    return this.prisma.pension.update({ where: { id: pensionId }, data });
+  }
+  async deletePension(pensionId: number) {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const rows = await tx.$queryRaw<
+          { id: number }[]
+        >`SELECT "id" FROM "Pension" WHERE "id" = ${pensionId} FOR UPDATE`;
+        if (!rows.length) throw new NotFoundException();
+        if (await tx.cycleGroup.count({ where: { pensionId } }))
+          throw new ConflictException('Pension is in use');
+        await tx.pension.delete({ where: { id: pensionId } });
+        return { id: pensionId };
+      });
+    } catch (error) {
+      this.rethrowConflict(error);
+    }
+  }
   reusableFees() {
     return this.prisma.enrollmentFee.findMany({
-      include: { _count: { select: { cycleGroups: true, enrollments: true } } },
+      include: {
+        _count: {
+          select: { cycles: true, cycleGroups: true, enrollments: true },
+        },
+      },
       orderBy: [{ name: 'asc' }, { id: 'asc' }],
     });
   }
@@ -189,10 +232,16 @@ export class CyclesService {
         const fee = await tx.enrollmentFee.findUniqueOrThrow({
           where: { id: feeId },
           include: {
-            _count: { select: { cycleGroups: true, enrollments: true } },
+            _count: {
+              select: { cycles: true, cycleGroups: true, enrollments: true },
+            },
           },
         });
-        if (fee._count.cycleGroups || fee._count.enrollments)
+        if (
+          fee._count.cycles ||
+          fee._count.cycleGroups ||
+          fee._count.enrollments
+        )
           throw new ConflictException('Fee is in use');
         await tx.enrollmentFee.delete({ where: { id: feeId } });
         return { id: feeId };
@@ -223,12 +272,12 @@ export class CyclesService {
     return this.prisma.enrollmentFee.update({ where: { id: feeId }, data });
   }
   async groups(cycleId: number) {
-    await this.detail(cycleId);
+    const cycle = await this.detail(cycleId);
     const groups = await this.prisma.cycleGroup.findMany({
       where: { academicCycleId: cycleId },
       include: {
         reusableGroup: true,
-        fees: { orderBy: [{ validFrom: 'desc' }, { id: 'desc' }] },
+        pension: true,
         _count: { select: { enrollments: true } },
       },
       orderBy: { reusableGroup: { name: 'asc' } },
@@ -236,6 +285,7 @@ export class CyclesService {
     return groups.map((group) => ({
       ...group,
       name: group.reusableGroup.name,
+      fees: cycle.fee ? [cycle.fee] : [],
     }));
   }
   reusableGroups() {
@@ -339,9 +389,7 @@ export class CyclesService {
         );
         if (
           !fee ||
-          !(await tx.cycleGroup.count({
-            where: { id: groupId, fees: { some: { id: feeId } } },
-          })) ||
+          cycle.feeId !== feeId ||
           fee.validFrom > today ||
           (fee.validUntil && fee.validUntil < today)
         )

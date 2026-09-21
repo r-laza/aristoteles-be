@@ -75,12 +75,14 @@ model User {
 }
 
 model AcademicCycle {
-  id          Int          @id @default(autoincrement())
+  feeId       Int?
+  fee         EnrollmentFee? @relation(fields: [feeId], references: [id], onDelete: Restrict)
+  id          Int            @id @default(autoincrement())
   name        String
-  startDate   DateTime     @db.Date
-  endDate     DateTime     @db.Date
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  startDate   DateTime       @db.Date
+  endDate     DateTime       @db.Date
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
   groups      CycleGroup[]
   enrollments Enrollment[]
 }
@@ -94,6 +96,8 @@ model Group {
 }
 
 model CycleGroup {
+  pensionId       Int?
+  pension         Pension?        @relation(fields: [pensionId], references: [id], onDelete: Restrict)
   id              Int             @id @default(autoincrement())
   reusableGroupId Int
   reusableGroup   Group           @relation(fields: [reusableGroupId], references: [id])
@@ -160,13 +164,22 @@ model Payment {
 }
 
 model EnrollmentFee {
-  id           Int          @id @default(autoincrement())
-  cycleGroups  CycleGroup[]
-  name         String
-  amount       Decimal      @db.Decimal(12, 2)
-  validFrom    DateTime     @db.Date
-  validUntil   DateTime?    @db.Date
-  createdAt    DateTime     @default(now())
-  enrollments  Enrollment[]
+  cycles      AcademicCycle[]
+  id          Int             @id @default(autoincrement())
+  cycleGroups CycleGroup[]
+  name        String
+  amount      Decimal         @db.Decimal(12, 2)
+  validFrom   DateTime        @db.Date
+  validUntil  DateTime?       @db.Date
+  createdAt   DateTime        @default(now())
+  enrollments Enrollment[]
+}
 
+model Pension {
+  id          Int          @id @default(autoincrement())
+  name        String
+  amount      Decimal      @db.Decimal(12, 2)
+  dueDay      Int
+  isActive    Boolean      @default(true)
+  cycleGroups CycleGroup[]
 }

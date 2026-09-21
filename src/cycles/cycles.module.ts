@@ -90,8 +90,33 @@ export class FeesController {
     return this.cycles.saveFee(body, id);
   }
 }
+@Controller('admin/pensions')
+@Roles('ADMIN')
+export class PensionsController {
+  constructor(private readonly cycles: CyclesService) {}
+  @Get() list() {
+    return this.cycles.reusablePensions();
+  }
+  @Post() create(@Body() body: unknown) {
+    return this.cycles.savePension(body);
+  }
+  @Post(':id/delete') delete(@Param('id', ParseIntPipe) id: number) {
+    return this.cycles.deletePension(id);
+  }
+  @Post(':id') edit(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: unknown,
+  ) {
+    return this.cycles.savePension(body, id);
+  }
+}
 @Module({
-  controllers: [CyclesController, GroupsController, FeesController],
+  controllers: [
+    CyclesController,
+    GroupsController,
+    FeesController,
+    PensionsController,
+  ],
   providers: [CyclesService],
 })
 export class CyclesModule {}
