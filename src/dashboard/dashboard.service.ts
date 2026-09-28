@@ -8,7 +8,7 @@ export class DashboardService {
 
   async getDashboard(): Promise<DashboardDto> {
     const student = await this.prisma.student.findFirst({
-      where: { name: 'Carlos Sánchez' },
+      where: { fullName: 'Carlos Sánchez' },
       include: {
         enrollments: {
           include: {
@@ -37,7 +37,13 @@ export class DashboardService {
       take: 4,
     });
 
-    const nextClass = courses[0] ?? { name: 'Sin clases', teacher: '', progress: 0, image: '', id: 0 };
+    const nextClass = courses[0] ?? {
+      name: 'Sin clases',
+      teacher: '',
+      progress: 0,
+      image: '',
+      id: 0,
+    };
     const nextClassDate = pendingTasks[0]?.dueAt ?? new Date();
 
     const recentActivity = await this.prisma.activity.findMany({
@@ -50,7 +56,7 @@ export class DashboardService {
     return {
       student: {
         id: student.id,
-        name: student.name,
+        name: student.fullName,
         initials: student.initials,
       },
       summary: {

@@ -26,6 +26,18 @@ export class CyclesController {
   @Get(':id/groups') groups(@Param('id', ParseIntPipe) id: number) {
     return this.cycles.groups(id);
   }
+  @Post(':id/groups') addGroup(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: unknown,
+  ) {
+    return this.cycles.addCycleGroup(id, body);
+  }
+  @Post(':id/groups/:groupId/delete') deleteGroup(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('groupId', ParseIntPipe) groupId: number,
+  ) {
+    return this.cycles.deleteCycleGroup(id, groupId);
+  }
   @Post(':id/delete') delete(@Param('id', ParseIntPipe) id: number) {
     return this.cycles.deleteCycle(id);
   }
@@ -34,6 +46,12 @@ export class CyclesController {
     @Body() body: unknown,
   ) {
     return this.cycles.create(body, id);
+  }
+  @Post(':id/details') editDetails(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: unknown,
+  ) {
+    return this.cycles.updateDetails(id, body);
   }
   @Get(':id/available-students') available(
     @Param('id', ParseIntPipe) id: number,

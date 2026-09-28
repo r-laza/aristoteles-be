@@ -15,14 +15,25 @@ async function main() {
       isActive: true,
     },
   });
-  const student = await prisma.student.upsert({
-    where: { name: 'Carlos Sánchez' },
-    update: {},
-    create: {
-      name: 'Carlos Sánchez',
-      initials: 'CS',
-    },
-  });
+  const student =
+    (await prisma.student.findFirst({
+      where: { fullName: 'Carlos Sánchez' },
+    })) ??
+    (await prisma.student.create({
+      data: {
+        fullName: 'Carlos Sánchez',
+        initials: 'CS',
+        dni: 'DEMO-001',
+        firstName: 'Carlos',
+        lastName: 'Sánchez',
+        birthDate: new Date('2010-01-01T00:00:00.000Z'),
+        gender: 'OTHER',
+        representativeName: 'Sin registrar',
+        relationship: 'OTHER',
+        relationshipOther: 'Sin registrar',
+        primaryPhone: 'Sin registrar',
+      },
+    }));
 
   const math = await prisma.course.upsert({
     where: { name: 'Matemática' },

@@ -69,6 +69,25 @@ export class CyclesService {
     if (!cycle) throw new NotFoundException();
     return cycle;
   }
+  async updateDetails(cycleId: number, body: unknown) {
+    const input = bodyObject(body);
+    const startDate = date(input.startDate);
+    const endDate = date(input.endDate);
+    if (endDate < startDate)
+      throw new BadRequestException('Invalid date range');
+    const feeId = id(input.feeId);
+    if (
+      !(await this.prisma.academicCycle.findUnique({ where: { id: cycleId } }))
+    )
+      throw new NotFoundException();
+    if (!(await this.prisma.enrollmentFee.findUnique({ where: { id: feeId } })))
+      throw new BadRequestException('Unknown enrollment fee');
+    return this.prisma.academicCycle.update({
+      where: { id: cycleId },
+      data: { name: name(input.name), startDate, endDate, feeId },
+      include: cycleInclude,
+    });
+  }
   async deleteCycle(cycleId: number) {
     try {
       return await this.prisma.$transaction(async (tx) => {
@@ -300,6 +319,58 @@ export class CyclesService {
       name: group.reusableGroup.name,
       fees: cycle.fee ? [cycle.fee] : [],
     }));
+  }
+  async addCycleGroup(cycleId: number, body: unknown) {
+    const input = bodyObject(body);
+    const groupId = id(input.groupId);
+    const pensionId = id(input.pensionId);
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        if (!(await tx.academicCycle.findUnique({ where: { id: cycleId } })))
+          throw new NotFoundException();
+        if (!(await tx.group.findUnique({ where: { id: groupId } })))
+          throw new BadRequestException('Unknown group');
+        if (!(await tx.pension.findUnique({ where: { id: pensionId } })))
+          throw new BadRequestException('Unknown pension');
+        return tx.cycleGroup.create({
+          data: {
+            academicCycleId: cycleId,
+            reusableGroupId: groupId,
+            pensionId,
+          },
+          include: { reusableGroup: true, pension: true },
+        });
+      });
+    } catch (error) {
+      this.rethrowConflict(error);
+    }
+  }
+  async deleteCycleGroup(cycleId: number, groupId: number) {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const rows = await tx.$queryRaw<
+          { id: number; reusableGroupId: number }[]
+        >`
+          SELECT "id", "reusableGroupId" FROM "Group"
+          WHERE "id" = ${groupId} AND "academicCycleId" = ${cycleId}
+          FOR UPDATE
+        `;
+        const group = rows[0];
+        if (!group) throw new NotFoundException();
+        if (await tx.enrollment.count({ where: { groupId } }))
+          throw new ConflictException('Group has dependent records');
+        await tx.cycleGroup.delete({ where: { id: groupId } });
+        if (
+          !(await tx.cycleGroup.count({
+            where: { reusableGroupId: group.reusableGroupId },
+          }))
+        )
+          await tx.group.delete({ where: { id: group.reusableGroupId } });
+        return { id: groupId };
+      });
+    } catch (error) {
+      this.rethrowConflict(error);
+    }
   }
   reusableGroups() {
     return this.prisma.group.findMany({

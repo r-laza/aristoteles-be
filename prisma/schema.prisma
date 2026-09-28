@@ -8,11 +8,38 @@ datasource db {
 }
 
 model Student {
-  id          Int                @id @default(autoincrement())
-  name        String             @unique
-  initials    String
-  enrollments CourseEnrollment[]
-  activities  Activity[]
+  id                 Int                @id @default(autoincrement())
+  fullName           String
+  initials           String
+  dni                String             @unique
+  firstName          String
+  lastName           String
+  birthDate          DateTime           @db.Date
+  gender             Gender
+  representativeName String
+  relationship       Relationship
+  relationshipOther  String?
+  primaryPhone       String
+  secondaryPhone     String?
+  isActive           Boolean            @default(true)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  userId             Int?               @unique
+  user               User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+  enrollments        CourseEnrollment[]
+  activities         Activity[]
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum Relationship {
+  FATHER
+  MOTHER
+  OTHER
 }
 
 model Course {
@@ -72,6 +99,7 @@ model User {
   isActive     Boolean      @default(true)
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
+  student      Student?
 }
 
 model AcademicCycle {
@@ -119,28 +147,28 @@ enum EnrollmentStatus {
 
 model Enrollment {
   enrollmentFeeName String?
-  pensionName String?
-  pensionStartDate DateTime? @db.Date
-  pensionEndDate DateTime? @db.Date
-  pensionAmount   Decimal?         @db.Decimal(12, 2)
-  pensionDueDay   Int?
-  payments        Payment[]
-  id              Int              @id @default(autoincrement())
-  studentId       Int
-  student         User             @relation(fields: [studentId], references: [id])
-  academicCycleId Int
-  academicCycle   AcademicCycle    @relation(fields: [academicCycleId], references: [id])
-  groupId         Int
-  group           CycleGroup       @relation(fields: [groupId, academicCycleId], references: [id, academicCycleId])
-  feeId           Int
-  fee             EnrollmentFee    @relation(fields: [feeId], references: [id])
-  baseAmount      Decimal          @db.Decimal(12, 2)
-  discountAmount  Decimal          @default(0) @db.Decimal(12, 2)
-  discountReason  String?
-  finalAmount     Decimal          @db.Decimal(12, 2)
-  status          EnrollmentStatus @default(ACTIVE)
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
+  pensionName       String?
+  pensionStartDate  DateTime?        @db.Date
+  pensionEndDate    DateTime?        @db.Date
+  pensionAmount     Decimal?         @db.Decimal(12, 2)
+  pensionDueDay     Int?
+  payments          Payment[]
+  id                Int              @id @default(autoincrement())
+  studentId         Int
+  student           User             @relation(fields: [studentId], references: [id])
+  academicCycleId   Int
+  academicCycle     AcademicCycle    @relation(fields: [academicCycleId], references: [id])
+  groupId           Int
+  group             CycleGroup       @relation(fields: [groupId, academicCycleId], references: [id, academicCycleId])
+  feeId             Int
+  fee               EnrollmentFee    @relation(fields: [feeId], references: [id])
+  baseAmount        Decimal          @db.Decimal(12, 2)
+  discountAmount    Decimal          @default(0) @db.Decimal(12, 2)
+  discountReason    String?
+  finalAmount       Decimal          @db.Decimal(12, 2)
+  status            EnrollmentStatus @default(ACTIVE)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
 
   @@unique([studentId, academicCycleId])
   @@index([academicCycleId])
