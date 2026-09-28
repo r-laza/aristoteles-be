@@ -253,4 +253,92 @@ describe('Enrollment payments (PostgreSQL)', () => {
     expect(enrollment.discountAmount.toString()).toBe('100');
     expect(enrollment.finalAmount.toString()).toBe('500');
   });
+  it('separates pension periods from a settled enrollment and prevents concurrent period overpayment', async () => {
+    await prisma.enrollment.update({
+      where: { id: enrollmentId },
+      data: {
+        pensionAmount: '80.50',
+        pensionDueDay: 10,
+        pensionStartDate: new Date('2020-01-01'),
+        pensionEndDate: new Date('2020-02-29'),
+      },
+    });
+    const pensionPayment = {
+      ...payment,
+      paymentType: 'PENSION',
+      period: '2020-01',
+      amount: '30.25',
+    };
+    await post({ ...pensionPayment, period: '2020-03' }).expect(400);
+    await post({ ...pensionPayment, period: '2020-13' }).expect(400);
+    await post({ ...pensionPayment, period: null }).expect(400);
+    await post({ ...pensionPayment, paymentType: 'INVALID' }).expect(400);
+    await post({ ...pensionPayment, paymentType: 'ENROLLMENT' }).expect(400);
+    await post(pensionPayment, admin, freeId).expect(400);
+    await post(pensionPayment).expect(201);
+    const results = await Promise.all([
+      post({ ...pensionPayment, amount: '50.25' }),
+      post({ ...pensionPayment, amount: '50.25' }),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+    const response = await get(`/cycles/${cycleId}`).expect(200);
+    const data = response.body as BalanceResult & {
+      rows: {
+        id: number;
+        obligations: {
+          paymentType: string;
+          period: string | null;
+          balance: string;
+          status: string;
+        }[];
+      }[];
+    };
+    const row = data.rows.find((r) => r.id === enrollmentId)!;
+    expect(row.amountPaid).toBe('580.5');
+    expect(row.balance).toBe('80.5');
+    expect(row.status).toBe('OVERDUE');
+    expect(row.obligations).toEqual([
+      expect.objectContaining({
+        paymentType: 'ENROLLMENT',
+        balance: '0',
+        status: 'PAID',
+      }),
+      expect.objectContaining({
+        period: '2020-01',
+        balance: '0',
+        status: 'PAID',
+      }),
+      expect.objectContaining({
+        period: '2020-02',
+        balance: '80.5',
+        status: 'OVERDUE',
+      }),
+    ]);
+    await post({ ...pensionPayment, amount: '0.01' }).expect(409);
+    await post({
+      ...pensionPayment,
+      period: '2020-02',
+      amount: '80.50',
+    }).expect(201);
+    const settled = (await get(`/cycles/${cycleId}`).expect(200))
+      .body as BalanceResult;
+    expect(settled.rows.find((r) => r.id === enrollmentId)?.status).toBe(
+      'PAID',
+    );
+    const history = await get(`/enrollments/${enrollmentId}`).expect(200);
+    expect(history.body as unknown).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          paymentType: 'PENSION',
+          period: '2020-02',
+          amount: '80.5',
+        }),
+        expect.objectContaining({
+          paymentType: 'ENROLLMENT',
+          period: null,
+          amount: '200',
+        }),
+      ]),
+    );
+  });
 });

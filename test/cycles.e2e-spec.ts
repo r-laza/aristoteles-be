@@ -631,4 +631,57 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
       await prisma.cycleGroup.count({ where: { academicCycleId: cycleId } }),
     ).toBe(groupCount);
   });
+  it('assigns missing pensions to existing students once and preserves their snapshots', async () => {
+    const enrollment = await prisma.enrollment.findFirstOrThrow({
+      where: { academicCycleId: cycleId },
+    });
+    await prisma.enrollment.update({
+      where: { id: enrollment.id },
+      data: { pensionAmount: null, pensionDueDay: null, pensionName: null },
+    });
+    await post(`/${cycleId}`).send(payload()).expect(201);
+    const assigned = await prisma.enrollment.findUniqueOrThrow({
+      where: { id: enrollment.id },
+    });
+    const pension = await prisma.pension.findUniqueOrThrow({
+      where: { id: pensionId },
+    });
+    expect(assigned.pensionAmount?.toString()).toBe(pension.amount.toString());
+    expect(assigned.pensionName).toBe(pension.name);
+    expect(assigned.pensionStartDate).toEqual(new Date(payload().startDate));
+    await post(`/${cycleId}`)
+      .send({
+        ...payload(),
+        endDate: '2029-12-31',
+        groups: [
+          { groupId: reusableId, pensionId: otherPensionId },
+          { groupId: betaId, pensionId },
+        ],
+      })
+      .expect(201);
+    const preserved = await prisma.enrollment.findUniqueOrThrow({
+      where: { id: enrollment.id },
+    });
+    expect(preserved.pensionAmount).toEqual(assigned.pensionAmount);
+    expect(preserved.pensionName).toBe(assigned.pensionName);
+    expect(preserved.pensionEndDate).toEqual(assigned.pensionEndDate);
+    const balances = await request(app.getHttpServer())
+      .get(`/api/admin/payments/cycles/${cycleId}`)
+      .set('Cookie', admin)
+      .expect(200);
+    const rows = (
+      balances.body as {
+        rows: {
+          id: number;
+          pensionName: string;
+          obligations: { paymentType: string }[];
+        }[];
+      }
+    ).rows;
+    const row = rows.find((item) => item.id === enrollment.id)!;
+    expect(row.pensionName).toBe(assigned.pensionName);
+    expect(
+      row.obligations.filter((c) => c.paymentType === 'PENSION').length,
+    ).toBeGreaterThan(0);
+  });
 });

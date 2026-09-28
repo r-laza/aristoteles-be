@@ -141,7 +141,7 @@ export class CyclesService {
             where: { id: { in: removed.map((group) => group.id) } },
           });
           for (const row of assignments) {
-            await tx.cycleGroup.upsert({
+            const assignedGroup = await tx.cycleGroup.upsert({
               where: {
                 academicCycleId_reusableGroupId: {
                   academicCycleId: cycle.id,
@@ -154,6 +154,19 @@ export class CyclesService {
                 pensionId: row.pensionId,
               },
               update: { pensionId: row.pensionId, fees: { set: [] } },
+            });
+            const pension = await tx.pension.findUniqueOrThrow({
+              where: { id: row.pensionId },
+            });
+            await tx.enrollment.updateMany({
+              where: { groupId: assignedGroup.id, pensionAmount: null },
+              data: {
+                pensionName: pension.name,
+                pensionAmount: pension.amount,
+                pensionDueDay: pension.dueDay,
+                pensionStartDate: cycle.startDate,
+                pensionEndDate: cycle.endDate,
+              },
             });
           }
           return tx.academicCycle.findUniqueOrThrow({
@@ -374,6 +387,7 @@ export class CyclesService {
           throw new BadRequestException('Student required');
         const group = await tx.cycleGroup.findUnique({
           where: { id: groupId },
+          include: { pension: true },
         });
         if (!group || group.academicCycleId !== cycleId)
           throw new BadRequestException('Group must belong to cycle');
@@ -407,6 +421,12 @@ export class CyclesService {
             discountAmount,
             discountReason,
             finalAmount: baseAmount.minus(discountAmount),
+            enrollmentFeeName: fee.name,
+            pensionName: group.pension?.name,
+            pensionStartDate: cycle.startDate,
+            pensionEndDate: cycle.endDate,
+            pensionAmount: group.pension?.amount,
+            pensionDueDay: group.pension?.dueDay,
           },
           include: enrollmentInclude,
         });

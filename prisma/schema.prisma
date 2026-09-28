@@ -118,6 +118,12 @@ enum EnrollmentStatus {
 }
 
 model Enrollment {
+  enrollmentFeeName String?
+  pensionName String?
+  pensionStartDate DateTime? @db.Date
+  pensionEndDate DateTime? @db.Date
+  pensionAmount   Decimal?         @db.Decimal(12, 2)
+  pensionDueDay   Int?
   payments        Payment[]
   id              Int              @id @default(autoincrement())
   studentId       Int
@@ -149,7 +155,14 @@ enum PaymentMethod {
   OTHER
 }
 
+enum PaymentType {
+  ENROLLMENT
+  PENSION
+}
+
 model Payment {
+  paymentType   PaymentType   @default(ENROLLMENT)
+  period        String?
   id            Int           @id @default(autoincrement())
   enrollmentId  Int
   enrollment    Enrollment    @relation(fields: [enrollmentId], references: [id])
