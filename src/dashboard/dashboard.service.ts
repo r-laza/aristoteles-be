@@ -1,10 +1,52 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { DashboardDto } from './dashboard.types';
+import { institutionToday } from '../payments/obligations';
+import { aggregateAdminDashboard } from './admin-dashboard';
 
 @Injectable()
 export class DashboardService {
   constructor(private readonly prisma: PrismaService) {}
+
+  async getAdminDashboard(cycleId?: number) {
+    const today = institutionToday();
+    const day = new Date(`${today}T00:00:00.000Z`);
+    const cycle = await this.prisma.academicCycle.findFirst({
+      where:
+        cycleId === undefined
+          ? { startDate: { lte: day }, endDate: { gte: day } }
+          : { id: cycleId },
+      orderBy: [{ startDate: 'desc' }, { id: 'desc' }],
+      select: {
+        id: true,
+        name: true,
+        startDate: true,
+        endDate: true,
+        enrollments: {
+          select: {
+            finalAmount: true,
+            pensionStartDate: true,
+            pensionEndDate: true,
+            pensionBaseAmount: true,
+            pensionDiscountAmount: true,
+            pensionAmount: true,
+            pensionDueDay: true,
+            academicCycle: { select: { startDate: true, endDate: true } },
+            payments: {
+              select: {
+                amount: true,
+                paymentType: true,
+                period: true,
+                paymentDate: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    if (cycleId !== undefined && !cycle) throw new NotFoundException();
+    return cycle ? aggregateAdminDashboard(cycle, today) : null;
+  }
 
   async getDashboard(): Promise<DashboardDto> {
     const student = await this.prisma.student.findFirst({

@@ -34,11 +34,46 @@ export function paymentStatus(
         : 'PARTIAL';
 }
 
+// Keep this aligned with the account-level status shown in Gestión de pagos:
+// future pension installments remain in the balance but do not, by themselves,
+// make a student with prior payments appear delinquent.
+export function accountStatus(
+  charges: ReturnType<typeof obligations>,
+  today = institutionToday(),
+) {
+  if (!charges.some((charge) => charge.amountDue.greaterThan(0))) return null;
+  const pending = charges.filter((charge) => charge.balance.greaterThan(0));
+  if (!pending.length) return 'PAID';
+  if (
+    pending.some((charge) => charge.dueDate !== null && charge.dueDate < today)
+  )
+    return 'PENDING';
+  if (pending.some((charge) => charge.amountPaid.greaterThan(0)))
+    return 'PARTIAL';
+  if (
+    pending.some(
+      (charge) =>
+        charge.paymentType === 'ENROLLMENT' ||
+        (charge.dueDate !== null && charge.dueDate <= today),
+    )
+  )
+    return charges.some((charge) => charge.amountPaid.greaterThan(0))
+      ? 'PARTIAL'
+      : 'PENDING';
+  return charges.some((charge) => charge.amountPaid.greaterThan(0))
+    ? 'PAID'
+    : 'PENDING';
+}
+
 export function obligations(
   enrollment: {
     pensionStartDate?: Date | null;
     pensionEndDate?: Date | null;
     finalAmount: Prisma.Decimal;
+    baseAmount?: Prisma.Decimal;
+    discountAmount?: Prisma.Decimal;
+    pensionBaseAmount?: Prisma.Decimal | null;
+    pensionDiscountAmount?: Prisma.Decimal | null;
     pensionAmount: Prisma.Decimal | null;
     pensionDueDay: number | null;
     academicCycle: { startDate: Date; endDate: Date };
@@ -54,12 +89,18 @@ export function obligations(
     paymentType: 'ENROLLMENT' | 'PENSION';
     period: string | null;
     amount: Prisma.Decimal;
+    originalAmount: Prisma.Decimal;
+    discountAmount: Prisma.Decimal;
     dueDate: string | null;
   }[] = [
     {
       paymentType: 'ENROLLMENT',
       period: null,
       amount: enrollment.finalAmount,
+      originalAmount:
+        enrollment.baseAmount ??
+        enrollment.finalAmount.plus(enrollment.discountAmount ?? 0),
+      discountAmount: enrollment.discountAmount ?? new Prisma.Decimal(0),
       dueDate: null,
     },
   ];
@@ -77,6 +118,10 @@ export function obligations(
         paymentType: 'PENSION',
         period,
         amount: enrollment.pensionAmount,
+        originalAmount:
+          enrollment.pensionBaseAmount ?? enrollment.pensionAmount,
+        discountAmount:
+          enrollment.pensionDiscountAmount ?? new Prisma.Decimal(0),
         dueDate: `${period}-${String(day).padStart(2, '0')}`,
       });
     }

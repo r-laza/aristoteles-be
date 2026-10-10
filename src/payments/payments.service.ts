@@ -4,7 +4,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { PaymentMethod, Prisma } from '@prisma/client';
+import {
+  PaymentMethod,
+  Prisma,
+  ReceiptDocumentType,
+  ReceiptRelationship,
+} from '@prisma/client';
 import { obligations, paymentStatus } from './obligations';
 import { PrismaService } from '../database/prisma.service';
 
@@ -37,12 +42,14 @@ export class PaymentsService {
         finalAmount: true,
         pensionStartDate: true,
         pensionEndDate: true,
+        pensionBaseAmount: true,
+        pensionDiscountAmount: true,
         pensionAmount: true,
         pensionDueDay: true,
         academicCycle: {
           select: { name: true, startDate: true, endDate: true },
         },
-        student: { select: { id: true, fullName: true, username: true } },
+        student: { select: { id: true, fullName: true, dni: true } },
         group: {
           select: { id: true, reusableGroup: { select: { name: true } } },
         },
@@ -121,6 +128,130 @@ export class PaymentsService {
       orderBy: [{ paymentDate: 'desc' }, { id: 'desc' }],
     });
   }
+  async receipt(paymentId: number) {
+    const payment = await this.prisma.payment.findUnique({
+      where: { id: paymentId },
+      include: {
+        enrollment: {
+          include: {
+            academicCycle: { select: { name: true } },
+            student: { select: { fullName: true } },
+            group: {
+              select: { reusableGroup: { select: { name: true } } },
+            },
+            fee: { select: { name: true } },
+          },
+        },
+      },
+    });
+    if (!payment?.receiptNumber) throw new NotFoundException();
+    const pension = payment.paymentType === 'PENSION';
+    return {
+      paymentId: payment.id,
+      receiptNumber: payment.receiptNumber,
+      generatedAt: payment.receiptGeneratedAt,
+      payer: {
+        name: payment.payerName,
+        documentType: payment.payerDocumentType,
+        documentNumber: payment.payerDocumentNumber,
+        relationship: payment.payerRelationship,
+      },
+      student: {
+        name: payment.enrollment.student.fullName,
+        group: payment.enrollment.group.reusableGroup.name,
+        cycle: payment.enrollment.academicCycle.name,
+      },
+      payment: {
+        date: payment.paymentDate,
+        method: payment.paymentMethod,
+        reference: payment.reference,
+        amount: payment.amount,
+      },
+      obligation: {
+        paymentType: payment.paymentType,
+        period: payment.period,
+        name: pension
+          ? payment.enrollment.pensionName
+          : (payment.enrollment.enrollmentFeeName ??
+            payment.enrollment.fee.name),
+        originalAmount: pension
+          ? payment.enrollment.pensionBaseAmount
+          : payment.enrollment.baseAmount,
+        discountAmount: pension
+          ? (payment.enrollment.pensionDiscountAmount ?? 0)
+          : payment.enrollment.discountAmount,
+        paidAmount: payment.amount,
+      },
+    };
+  }
+  async createReceipt(paymentId: number, body: unknown) {
+    if (!body || typeof body !== 'object' || Array.isArray(body))
+      throw new BadRequestException();
+    const input = body as Record<string, unknown>;
+    const payerName = optionalText(input.payerName, 150);
+    const payerDocumentNumber = optionalText(input.payerDocumentNumber, 30);
+    if (!payerName || !payerDocumentNumber)
+      throw new BadRequestException('Missing payer information');
+    if (
+      !Object.values(ReceiptDocumentType).includes(
+        input.payerDocumentType as ReceiptDocumentType,
+      )
+    )
+      throw new BadRequestException('Invalid payer document type');
+    const payerDocumentType = input.payerDocumentType as ReceiptDocumentType;
+    const documentValid =
+      payerDocumentType === ReceiptDocumentType.DNI
+        ? /^\d{8}$/.test(payerDocumentNumber)
+        : /^[A-Za-z0-9]{6,12}$/.test(payerDocumentNumber);
+    if (!documentValid)
+      throw new BadRequestException('Invalid payer document number');
+    const payerRelationship =
+      input.payerRelationship === undefined || input.payerRelationship === ''
+        ? null
+        : input.payerRelationship;
+    if (
+      payerRelationship !== null &&
+      !Object.values(ReceiptRelationship).includes(
+        payerRelationship as ReceiptRelationship,
+      )
+    )
+      throw new BadRequestException('Invalid payer relationship');
+
+    await this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<
+        { id: number }[]
+      >`SELECT "id" FROM "Payment" WHERE "id" = ${paymentId} FOR UPDATE`;
+      if (!locked.length) throw new NotFoundException();
+      const existing = await tx.payment.findUniqueOrThrow({
+        where: { id: paymentId },
+        select: { receiptNumber: true },
+      });
+      if (existing.receiptNumber) return;
+      const year = Number(
+        new Intl.DateTimeFormat('en', {
+          year: 'numeric',
+          timeZone: 'America/Guayaquil',
+        }).format(new Date()),
+      );
+      const counter = await tx.receiptCounter.upsert({
+        where: { year },
+        create: { year, lastValue: 1 },
+        update: { lastValue: { increment: 1 } },
+      });
+      await tx.payment.update({
+        where: { id: paymentId },
+        data: {
+          payerName,
+          payerDocumentType,
+          payerDocumentNumber,
+          payerRelationship: payerRelationship as ReceiptRelationship | null,
+          receiptNumber: `REC-${year}-${String(counter.lastValue).padStart(6, '0')}`,
+          receiptGeneratedAt: new Date(),
+        },
+      });
+    });
+    return this.receipt(paymentId);
+  }
   async register(enrollmentId: number, body: unknown) {
     if (!body || typeof body !== 'object' || Array.isArray(body))
       throw new BadRequestException();
@@ -153,13 +284,32 @@ export class PaymentsService {
     const paymentType = input.paymentType ?? 'ENROLLMENT';
     if (paymentType !== 'ENROLLMENT' && paymentType !== 'PENSION')
       throw new BadRequestException('Invalid payment type');
+    const periodPattern = /^\d{4}-(0[1-9]|1[0-2])$/;
     const period = input.period ?? null;
-    if (
-      (paymentType === 'ENROLLMENT' && period !== null) ||
-      (paymentType === 'PENSION' &&
-        (typeof period !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])$/.test(period)))
-    )
-      throw new BadRequestException('Invalid payment period');
+    let periods: (string | null)[];
+    if (input.periods !== undefined) {
+      if (
+        paymentType !== 'PENSION' ||
+        period !== null ||
+        !Array.isArray(input.periods) ||
+        input.periods.length === 0 ||
+        input.periods.length > 24 ||
+        input.periods.some(
+          (value) => typeof value !== 'string' || !periodPattern.test(value),
+        ) ||
+        new Set(input.periods).size !== input.periods.length
+      )
+        throw new BadRequestException('Invalid payment periods');
+      periods = input.periods as string[];
+    } else {
+      if (
+        (paymentType === 'ENROLLMENT' && period !== null) ||
+        (paymentType === 'PENSION' &&
+          (typeof period !== 'string' || !periodPattern.test(period)))
+      )
+        throw new BadRequestException('Invalid payment period');
+      periods = [period as string | null];
+    }
     const reference = optionalText(input.reference, 200),
       notes = optionalText(input.notes, 1000);
     return this.prisma.$transaction(
@@ -173,26 +323,47 @@ export class PaymentsService {
           where: { id: enrollmentId },
           include: { academicCycle: true, payments: true },
         });
-        const charge = obligations(enrollment).find(
-          (c) => c.paymentType === paymentType && c.period === period,
+        const charges = obligations(enrollment).filter(
+          (charge) =>
+            charge.paymentType === paymentType &&
+            periods.includes(charge.period),
         );
-        if (!charge)
+        if (charges.length !== periods.length)
           throw new BadRequestException('Payment obligation unavailable');
-        const balance = charge.balance;
+        if (charges.some((charge) => !charge.balance.greaterThan(0)))
+          throw new ConflictException('Payment obligation unavailable');
+        const balance = charges.reduce(
+          (sum, charge) => sum.plus(charge.balance),
+          new Prisma.Decimal(0),
+        );
         if (amount.greaterThan(balance))
           throw new ConflictException('Payment exceeds remaining balance');
-        return tx.payment.create({
-          data: {
-            enrollmentId,
-            paymentType,
-            period: period as string | null,
-            amount,
-            paymentDate,
-            paymentMethod: input.paymentMethod as PaymentMethod,
-            reference,
-            notes,
-          },
-        });
+        if (periods.length > 1 && !amount.equals(balance))
+          throw new BadRequestException(
+            'Multiple installments require full payment',
+          );
+        const payments = [];
+        for (const charge of charges) {
+          payments.push(
+            await tx.payment.create({
+              data: {
+                enrollmentId,
+                paymentType,
+                period: charge.period,
+                amount: periods.length > 1 ? charge.balance : amount,
+                paymentDate,
+                paymentMethod: input.paymentMethod as PaymentMethod,
+                reference,
+                notes,
+              },
+            }),
+          );
+        }
+        return {
+          payments,
+          totalAmount: amount,
+          obligationCount: payments.length,
+        };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
     );

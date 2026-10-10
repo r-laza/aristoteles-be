@@ -1,5 +1,10 @@
 import { Prisma } from '@prisma/client';
-import { cyclePeriods, obligations, paymentStatus } from './obligations';
+import {
+  accountStatus,
+  cyclePeriods,
+  obligations,
+  paymentStatus,
+} from './obligations';
 
 const decimal = (value: string | number) => new Prisma.Decimal(value);
 const enrollment = (): Parameters<typeof obligations>[0] => ({
@@ -66,5 +71,42 @@ describe('Payment obligations', () => {
     });
     expect(charges).toHaveLength(1);
     expect(charges[0].status).toBe('PAID');
+  });
+  it('exposes separate enrollment and pension discount snapshots', () => {
+    const charges = obligations({
+      ...enrollment(),
+      baseAmount: decimal(120),
+      discountAmount: decimal(20),
+      pensionBaseAmount: decimal(60),
+      pensionDiscountAmount: decimal(10),
+    });
+    expect(charges[0]).toEqual(
+      expect.objectContaining({
+        originalAmount: decimal(120),
+        discountAmount: decimal(20),
+        amountDue: decimal(100),
+      }),
+    );
+    expect(charges[1]).toEqual(
+      expect.objectContaining({
+        originalAmount: decimal(60),
+        discountAmount: decimal(10),
+        amountDue: decimal(50),
+      }),
+    );
+  });
+  it('uses the same account status rule as payment management', () => {
+    const data = enrollment();
+    data.payments.push({
+      paymentType: 'PENSION',
+      period: '2024-01',
+      amount: decimal(50),
+    });
+    expect(accountStatus(obligations(data, '2024-01-20'), '2024-01-20')).toBe(
+      'PAID',
+    );
+    expect(accountStatus(obligations(data, '2024-03-01'), '2024-03-01')).toBe(
+      'PENDING',
+    );
   });
 });

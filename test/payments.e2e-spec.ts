@@ -34,6 +34,12 @@ describe('Enrollment payments (PostgreSQL)', () => {
       .set('Cookie', cookie)
       .set('X-Requested-With', 'Aristoteles')
       .send(body as object);
+  const receiptPost = (id: number, body: unknown, cookie = admin) =>
+    request(app.getHttpServer())
+      .post(`/api/admin/payments/${id}/receipt`)
+      .set('Cookie', cookie)
+      .set('X-Requested-With', 'Aristoteles')
+      .send(body as object);
   const payment = {
     amount: '200',
     paymentDate: '2026-09-13',
@@ -68,7 +74,24 @@ describe('Enrollment payments (PostgreSQL)', () => {
       if (role === 'ADMIN') admin = cookie;
       if (role === 'STUDENT') {
         student = cookie;
-        studentId = user.id;
+        studentId = (
+          await prisma.student.create({
+            data: {
+              userId: user.id,
+              fullName: 'Payment student',
+              initials: 'PS',
+              dni: `${prefix}-student`,
+              firstName: 'Payment',
+              lastName: 'Student',
+              birthDate: new Date('2010-01-01'),
+              gender: 'OTHER',
+              representativeName: 'Representative',
+              relationship: 'OTHER',
+              relationshipOther: 'Other',
+              primaryPhone: '0000000000',
+            },
+          })
+        ).id;
       }
       if (role === 'TEACHER') teacher = cookie;
     }
@@ -118,7 +141,24 @@ describe('Enrollment payments (PostgreSQL)', () => {
     freeId = (
       await prisma.enrollment.create({
         data: {
-          studentId: freeUser.id,
+          studentId: (
+            await prisma.student.create({
+              data: {
+                userId: freeUser.id,
+                fullName: 'Free student',
+                initials: 'FS',
+                dni: `${prefix}-free`,
+                firstName: 'Free',
+                lastName: 'Student',
+                birthDate: new Date('2010-01-01'),
+                gender: 'OTHER',
+                representativeName: 'Representative',
+                relationship: 'OTHER',
+                relationshipOther: 'Other',
+                primaryPhone: '0000000000',
+              },
+            })
+          ).id,
           academicCycleId: cycleId,
           groupId: group.id,
           feeId: fee.id,
@@ -147,6 +187,9 @@ describe('Enrollment payments (PostgreSQL)', () => {
       await prisma.academicCycle.deleteMany({ where: { name: prefix } });
       await prisma.user.deleteMany({
         where: { username: { startsWith: prefix } },
+      });
+      await prisma.student.deleteMany({
+        where: { dni: { startsWith: prefix } },
       });
     }
     if (app) await app.close();
@@ -221,6 +264,76 @@ describe('Enrollment payments (PostgreSQL)', () => {
         notes: 'First payment',
       }),
     ]);
+  });
+  it('creates one persisted, idempotent receipt for an existing payment', async () => {
+    const history = await get(`/enrollments/${enrollmentId}`).expect(200);
+    const paymentId = (history.body as { id: number }[])[0].id;
+    const input = {
+      payerName: 'Juan Pérez García',
+      payerDocumentType: 'DNI',
+      payerDocumentNumber: '76372489',
+      payerRelationship: 'FATHER',
+    };
+    await receiptPost(paymentId, input, student).expect(403);
+    await request(app.getHttpServer())
+      .get(`/api/admin/payments/${paymentId}/receipt`)
+      .expect(401);
+    for (const invalid of [
+      { ...input, payerName: '' },
+      { ...input, payerDocumentType: 'INVALID' },
+      { ...input, payerDocumentNumber: '123' },
+      { ...input, payerRelationship: 'INVALID' },
+    ])
+      await receiptPost(paymentId, invalid).expect(400);
+    await receiptPost(2147483647, input).expect(404);
+
+    const created = await receiptPost(paymentId, input).expect(201);
+    const createdBody = created.body as unknown as {
+      paymentId: number;
+      receiptNumber: string;
+      payer: {
+        name: string;
+        documentType: string;
+        documentNumber: string;
+        relationship: string;
+      };
+      student: { name: string };
+      payment: { amount: string };
+      obligation: {
+        paymentType: string;
+        originalAmount: string;
+        discountAmount: string;
+        paidAmount: string;
+      };
+    };
+    expect(createdBody.paymentId).toBe(paymentId);
+    expect(createdBody.receiptNumber).toMatch(/^REC-\d{4}-\d{6}$/);
+    expect(createdBody.payer).toEqual({
+      name: input.payerName,
+      documentType: input.payerDocumentType,
+      documentNumber: input.payerDocumentNumber,
+      relationship: input.payerRelationship,
+    });
+    expect(createdBody.student.name).toBe('Payment student');
+    expect(createdBody.payment.amount).toBe('200');
+    expect(createdBody.obligation).toEqual({
+      paymentType: 'ENROLLMENT',
+      originalAmount: '600',
+      discountAmount: '100',
+      paidAmount: '200',
+      name: 'Regular',
+      period: null,
+    });
+    const downloaded = await request(app.getHttpServer())
+      .get(`/api/admin/payments/${paymentId}/receipt`)
+      .set('Cookie', admin)
+      .expect(200);
+    expect(downloaded.body as unknown).toEqual(createdBody);
+    const repeated = await receiptPost(paymentId, {
+      ...input,
+      payerName: 'Different payer',
+    }).expect(201);
+    expect(repeated.body as unknown).toEqual(createdBody);
   });
   it('serializes concurrent requests to prevent overpayment', async () => {
     const results = await Promise.all([
@@ -323,6 +436,34 @@ describe('Enrollment payments (PostgreSQL)', () => {
     const settled = (await get(`/cycles/${cycleId}`).expect(200))
       .body as BalanceResult;
     expect(settled.rows.find((r) => r.id === enrollmentId)?.status).toBe(
+      'PAID',
+    );
+    await prisma.enrollment.update({
+      where: { id: enrollmentId },
+      data: { pensionEndDate: new Date('2020-04-30') },
+    });
+    const multiple = {
+      ...pensionPayment,
+      period: null,
+      periods: ['2020-03', '2020-04'],
+      amount: '161.00',
+    };
+    await post({ ...multiple, amount: '160.99' }).expect(400);
+    const registered = await post(multiple).expect(201);
+    expect(registered.body as unknown).toEqual(
+      expect.objectContaining({
+        totalAmount: '161',
+        obligationCount: 2,
+        payments: [
+          expect.objectContaining({ period: '2020-03', amount: '80.5' }),
+          expect.objectContaining({ period: '2020-04', amount: '80.5' }),
+        ],
+      }),
+    );
+    await post(multiple).expect(409);
+    const multiSettled = (await get(`/cycles/${cycleId}`).expect(200))
+      .body as BalanceResult;
+    expect(multiSettled.rows.find((r) => r.id === enrollmentId)?.status).toBe(
       'PAID',
     );
     const history = await get(`/enrollments/${enrollmentId}`).expect(200);

@@ -6,7 +6,6 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
-import { publicUserSelect } from '../auth/auth.types';
 
 function bodyObject(body: unknown): Record<string, unknown> {
   if (!body || typeof body !== 'object' || Array.isArray(body))
@@ -47,7 +46,7 @@ const cycleInclude = {
   _count: { select: { enrollments: true, groups: true } },
 } as const;
 const enrollmentInclude = {
-  student: { select: publicUserSelect },
+  student: { select: { id: true, fullName: true, dni: true } },
   group: { include: { reusableGroup: true } },
   fee: true,
 } as const;
@@ -181,6 +180,8 @@ export class CyclesService {
               where: { groupId: assignedGroup.id, pensionAmount: null },
               data: {
                 pensionName: pension.name,
+                pensionBaseAmount: pension.amount,
+                pensionDiscountAmount: 0,
                 pensionAmount: pension.amount,
                 pensionDueDay: pension.dueDay,
                 pensionStartDate: cycle.startDate,
@@ -409,13 +410,12 @@ export class CyclesService {
   }
   async available(cycleId: number) {
     await this.detail(cycleId);
-    return this.prisma.user.findMany({
+    return this.prisma.student.findMany({
       where: {
-        role: 'STUDENT',
         isActive: true,
-        enrollments: { none: { academicCycleId: cycleId } },
+        academicEnrollments: { none: { academicCycleId: cycleId } },
       },
-      select: publicUserSelect,
+      select: { id: true, fullName: true, dni: true },
       orderBy: { fullName: 'asc' },
     });
   }
@@ -436,10 +436,12 @@ export class CyclesService {
   }
   async enroll(cycleId: number, body: unknown) {
     const input = bodyObject(body);
+    if ('discountAmount' in input || 'feeId' in input)
+      throw new BadRequestException('Enrollment prices are cycle-defined');
     const studentId = id(input.studentId),
       groupId = id(input.groupId);
-    const feeId = id(input.feeId);
-    const discountAmount = money(input.discountAmount ?? 0);
+    const discountPercent = money(input.discountPercent ?? 0);
+    const pensionDiscountPercent = money(input.pensionDiscountPercent ?? 0);
     const discountReason =
       input.discountReason === undefined || input.discountReason === ''
         ? null
@@ -448,13 +450,14 @@ export class CyclesService {
       return await this.prisma.$transaction(async (tx) => {
         const cycle = await tx.academicCycle.findUnique({
           where: { id: cycleId },
+          include: { fee: true },
         });
         if (!cycle) throw new NotFoundException();
-        const student = await tx.user.findUnique({
+        const student = await tx.student.findUnique({
           where: { id: studentId },
-          select: { role: true, isActive: true },
+          select: { isActive: true },
         });
-        if (!student || student.role !== 'STUDENT' || !student.isActive)
+        if (!student || !student.isActive)
           throw new BadRequestException('Student required');
         const group = await tx.cycleGroup.findUnique({
           where: { id: groupId },
@@ -462,7 +465,7 @@ export class CyclesService {
         });
         if (!group || group.academicCycleId !== cycleId)
           throw new BadRequestException('Group must belong to cycle');
-        const fee = await tx.enrollmentFee.findUnique({ where: { id: feeId } });
+        const fee = cycle.fee;
         // Validity is a calendar date in the institution's timezone.
         const today = date(
           new Intl.DateTimeFormat('en-CA', {
@@ -474,21 +477,35 @@ export class CyclesService {
         );
         if (
           !fee ||
-          cycle.feeId !== feeId ||
           fee.validFrom > today ||
           (fee.validUntil && fee.validUntil < today)
         )
           throw new BadRequestException('Fee unavailable for this group');
         const baseAmount = fee.amount;
-        if (discountAmount.greaterThan(baseAmount))
-          throw new BadRequestException('Discount exceeds base amount');
+        if (
+          discountPercent.greaterThan(100) ||
+          pensionDiscountPercent.greaterThan(100)
+        )
+          throw new BadRequestException('Invalid discount percentage');
+        if (!group.pension)
+          throw new BadRequestException('Group pension required');
+        const discountAmount = baseAmount
+          .mul(discountPercent)
+          .div(100)
+          .toDecimalPlaces(2);
+        const pensionBaseAmount = group.pension.amount;
+        const pensionDiscountAmount = pensionBaseAmount
+          .mul(pensionDiscountPercent)
+          .div(100)
+          .toDecimalPlaces(2);
         return tx.enrollment.create({
           data: {
             studentId,
             academicCycleId: cycleId,
             groupId,
-            feeId,
+            feeId: fee.id,
             baseAmount,
+            discountPercent,
             discountAmount,
             discountReason,
             finalAmount: baseAmount.minus(discountAmount),
@@ -496,8 +513,11 @@ export class CyclesService {
             pensionName: group.pension?.name,
             pensionStartDate: cycle.startDate,
             pensionEndDate: cycle.endDate,
-            pensionAmount: group.pension?.amount,
-            pensionDueDay: group.pension?.dueDay,
+            pensionBaseAmount,
+            pensionDiscountPercent,
+            pensionDiscountAmount,
+            pensionAmount: pensionBaseAmount.minus(pensionDiscountAmount),
+            pensionDueDay: group.pension.dueDay,
           },
           include: enrollmentInclude,
         });

@@ -14,7 +14,7 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
   let prisma: PrismaService;
   const prefix = `cycles-test-${randomUUID()}`;
   let admin: string[], studentCookie: string[], teacherCookie: string[];
-  let studentId: number, teacherId: number;
+  let studentId: number, noAccessStudentId: number;
   let reusableId: number, betaId: number, feeId: number, otherFeeId: number;
   let pensionId: number, otherPensionId: number;
   let cycleId: number, otherId: number, groupId: number, otherGroupId: number;
@@ -58,13 +58,46 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
       if (role === 'ADMIN') admin = cookie;
       if (role === 'STUDENT') {
         studentCookie = cookie;
-        studentId = user.id;
+        studentId = (
+          await prisma.student.create({
+            data: {
+              userId: user.id,
+              fullName: 'Student with access',
+              initials: 'SA',
+              dni: `${prefix}-access`,
+              firstName: 'Student',
+              lastName: 'Access',
+              birthDate: new Date('2010-01-01'),
+              gender: 'OTHER',
+              representativeName: 'Representative',
+              relationship: 'OTHER',
+              relationshipOther: 'Other',
+              primaryPhone: '0000000000',
+            },
+          })
+        ).id;
       }
       if (role === 'TEACHER') {
         teacherCookie = cookie;
-        teacherId = user.id;
       }
     }
+    noAccessStudentId = (
+      await prisma.student.create({
+        data: {
+          fullName: 'Student without access',
+          initials: 'SN',
+          dni: `${prefix}-no-access`,
+          firstName: 'Student',
+          lastName: 'No Access',
+          birthDate: new Date('2010-01-01'),
+          gender: 'OTHER',
+          representativeName: 'Representative',
+          relationship: 'OTHER',
+          relationshipOther: 'Other',
+          primaryPhone: '0000000000',
+        },
+      })
+    ).id;
   });
   afterAll(async () => {
     if (prisma) {
@@ -86,6 +119,9 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
       });
       await prisma.user.deleteMany({
         where: { username: { startsWith: prefix } },
+      });
+      await prisma.student.deleteMany({
+        where: { dni: { startsWith: prefix } },
       });
     }
     if (app) await app.close();
@@ -351,25 +387,41 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
       await post(`/${cycleId}/enrollments`, cookie).send({}).expect(403);
     }
   });
-  it('validates assigned fees, students and discounts, and prevents duplicate enrollments', async () => {
-    const valid = { studentId, groupId, feeId, discountAmount: '100' };
+  it('derives prices from the cycle and group, validates discounts, and prevents duplicates', async () => {
+    const valid = {
+      studentId,
+      groupId,
+      discountPercent: '10',
+      pensionDiscountPercent: '5',
+    };
+    const availableBefore = await get(`/${cycleId}/available-students`).expect(
+      200,
+    );
+    expect(availableBefore.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: studentId }),
+        expect.objectContaining({ id: noAccessStudentId }),
+      ]),
+    );
     for (const change of [
-      { studentId: teacherId },
-      { feeId: null },
-      { discountAmount: '-1' },
-      { discountAmount: '601' },
-      { discountAmount: '0.001' },
-      { groupId: otherGroupId, feeId: otherFeeId },
+      { studentId: 999_999_999 },
+      { feeId },
+      { discountPercent: '-1' },
+      { discountPercent: '101' },
+      { discountPercent: '0.001' },
+      { pensionDiscountPercent: '-1' },
+      { pensionDiscountPercent: '101' },
+      { pensionDiscountPercent: '0.001' },
     ])
       await post(`/${cycleId}/enrollments`)
         .send({ ...valid, ...change })
         .expect(400);
-    await prisma.user.update({
+    await prisma.student.update({
       where: { id: studentId },
       data: { isActive: false },
     });
     await post(`/${cycleId}/enrollments`).send(valid).expect(400);
-    await prisma.user.update({
+    await prisma.student.update({
       where: { id: studentId },
       data: { isActive: true },
     });
@@ -384,7 +436,16 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
       },
     });
     expect(stored.baseAmount.toString()).toBe('600');
-    expect(stored.finalAmount.toString()).toBe('500');
+    expect(stored.discountPercent?.toString()).toBe('10');
+    expect(stored.discountAmount.toString()).toBe('60');
+    expect(stored.finalAmount.toString()).toBe('540');
+    expect(stored.pensionBaseAmount?.toString()).toBe('125.5');
+    expect(stored.pensionDiscountPercent?.toString()).toBe('5');
+    expect(stored.pensionDiscountAmount?.toString()).toBe('6.28');
+    expect(stored.pensionAmount?.toString()).toBe('119.22');
+    await post(`/${cycleId}/enrollments`)
+      .send({ ...valid, studentId: noAccessStudentId })
+      .expect(201);
     const available = await get(`/${cycleId}/available-students`).expect(200);
     expect(
       (available.body as { id: number }[]).some(
@@ -392,13 +453,26 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
       ),
     ).toBe(false);
     expect(
+      (available.body as { id: number }[]).some(
+        (student) => student.id === noAccessStudentId,
+      ),
+    ).toBe(false);
+    await prisma.enrollment.delete({
+      where: {
+        studentId_academicCycleId: {
+          studentId: noAccessStudentId,
+          academicCycleId: cycleId,
+        },
+      },
+    });
+    expect(
       JSON.stringify((await get(`/${cycleId}/enrollments`)).body),
     ).not.toContain('passwordHash');
   });
-  it('rejects expired and future fees and fees from another cycle assignment', async () => {
+  it('rejects groups from another cycle and unavailable cycle fees', async () => {
     const groups = (await get(`/${otherId}/groups`)).body as { id: number }[];
     await post(`/${cycleId}/enrollments`)
-      .send({ studentId, groupId: groups[0].id, feeId })
+      .send({ studentId, groupId: groups[0].id })
       .expect(400);
     await post(`/${cycleId}`)
       .send({
@@ -418,7 +492,7 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
         .send({ name: `${prefix}-siblings`, amount: '550', ...dates })
         .expect(201);
       await post(`/${cycleId}/enrollments`)
-        .send({ studentId, groupId, feeId: otherFeeId })
+        .send({ studentId, groupId })
         .expect(400);
     }
     await feePost(`/${otherFeeId}`)
@@ -452,8 +526,8 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
     expect(groups[0].id).toBe(groupId);
     expect(groups[0].fees.map((f) => f.id)).toEqual([otherFeeId]);
     await post(`/${cycleId}/enrollments`)
-      .send({ studentId, groupId, feeId })
-      .expect(400);
+      .send({ studentId, groupId })
+      .expect(409);
     expect(
       await prisma.group.count({ where: { name: { startsWith: prefix } } }),
     ).toBe(2);
@@ -470,7 +544,9 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
       },
     });
     expect(stored.baseAmount.toString()).toBe('600');
-    expect(stored.finalAmount.toString()).toBe('500');
+    expect(stored.discountPercent?.toString()).toBe('10');
+    expect(stored.discountAmount.toString()).toBe('60');
+    expect(stored.finalAmount.toString()).toBe('540');
     const other = (await get(`/${otherId}/groups`)).body as {
       id: number;
       reusableGroupId: number;
@@ -479,7 +555,7 @@ describe('Academic cycle enrollment (PostgreSQL)', () => {
     const assignment = other.find((g) => g.reusableGroupId === reusableId)!;
     expect(assignment.fees.find((f) => f.id === feeId)!.amount).toBe('700');
     await post(`/${otherId}/enrollments`)
-      .send({ studentId, groupId: assignment.id, feeId })
+      .send({ studentId, groupId: assignment.id })
       .expect(201);
     await post(`/${cycleId}`).send(payload()).expect(201);
     expect((await get(`/${cycleId}/groups`)).body).toHaveLength(2);
