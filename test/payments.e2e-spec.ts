@@ -46,6 +46,11 @@ describe('Enrollment payments (PostgreSQL)', () => {
     paymentMethod: 'TRANSFER',
     reference: 'R-123',
     notes: 'First payment',
+    payerName: 'Juan Pérez García',
+    payerDocumentType: 'DNI',
+    payerDocumentNumber: '76372489',
+    payerRelationship: 'OTHER',
+    payerRelationshipOther: 'Esposa',
   };
   beforeAll(async () => {
     const module = await Test.createTestingModule({
@@ -269,10 +274,11 @@ describe('Enrollment payments (PostgreSQL)', () => {
     const history = await get(`/enrollments/${enrollmentId}`).expect(200);
     const paymentId = (history.body as { id: number }[])[0].id;
     const input = {
-      payerName: 'Juan Pérez García',
-      payerDocumentType: 'DNI',
-      payerDocumentNumber: '76372489',
-      payerRelationship: 'FATHER',
+      payerName: payment.payerName,
+      payerDocumentType: payment.payerDocumentType,
+      payerDocumentNumber: payment.payerDocumentNumber,
+      payerRelationship: payment.payerRelationship,
+      payerRelationshipOther: payment.payerRelationshipOther,
     };
     await receiptPost(paymentId, input, student).expect(403);
     await request(app.getHttpServer())
@@ -296,6 +302,7 @@ describe('Enrollment payments (PostgreSQL)', () => {
         documentType: string;
         documentNumber: string;
         relationship: string;
+        relationshipOther: string | null;
       };
       student: { name: string };
       payment: { amount: string };
@@ -313,6 +320,7 @@ describe('Enrollment payments (PostgreSQL)', () => {
       documentType: input.payerDocumentType,
       documentNumber: input.payerDocumentNumber,
       relationship: input.payerRelationship,
+      relationshipOther: input.payerRelationshipOther,
     });
     expect(createdBody.student.name).toBe('Payment student');
     expect(createdBody.payment.amount).toBe('200');

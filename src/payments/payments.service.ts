@@ -12,6 +12,7 @@ import {
 } from '@prisma/client';
 import { obligations, paymentStatus } from './obligations';
 import { PrismaService } from '../database/prisma.service';
+import { StorageService } from '../storage/storage.service';
 
 function optionalText(value: unknown, max: number): string | null {
   if (value === undefined || value === null || value === '') return null;
@@ -19,9 +20,54 @@ function optionalText(value: unknown, max: number): string | null {
     throw new BadRequestException();
   return value.trim() || null;
 }
+
+function payerData(input: Record<string, unknown>) {
+  const payerName = optionalText(input.payerName, 150);
+  const payerDocumentNumber = optionalText(input.payerDocumentNumber, 30);
+  if (!payerName || !payerDocumentNumber)
+    throw new BadRequestException('Missing payer information');
+  if (
+    !Object.values(ReceiptDocumentType).includes(
+      input.payerDocumentType as ReceiptDocumentType,
+    )
+  )
+    throw new BadRequestException('Invalid payer document type');
+  const payerDocumentType = input.payerDocumentType as ReceiptDocumentType;
+  const documentValid =
+    payerDocumentType === ReceiptDocumentType.DNI
+      ? /^\d{8}$/.test(payerDocumentNumber)
+      : /^[A-Za-z0-9]{6,12}$/.test(payerDocumentNumber);
+  if (!documentValid)
+    throw new BadRequestException('Invalid payer document number');
+  const relationship =
+    input.payerRelationship === undefined || input.payerRelationship === ''
+      ? null
+      : input.payerRelationship;
+  if (
+    relationship !== null &&
+    !Object.values(ReceiptRelationship).includes(
+      relationship as ReceiptRelationship,
+    )
+  )
+    throw new BadRequestException('Invalid payer relationship');
+  const payerRelationshipOther =
+    relationship === ReceiptRelationship.OTHER
+      ? optionalText(input.payerRelationshipOther, 100)
+      : null;
+  return {
+    payerName,
+    payerDocumentType,
+    payerDocumentNumber,
+    payerRelationship: relationship as ReceiptRelationship | null,
+    payerRelationshipOther,
+  };
+}
 @Injectable()
 export class PaymentsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storage: StorageService,
+  ) {}
   async balances(cycleId: number) {
     if (
       !(await this.prisma.academicCycle.findUnique({
@@ -49,7 +95,18 @@ export class PaymentsService {
         academicCycle: {
           select: { name: true, startDate: true, endDate: true },
         },
-        student: { select: { id: true, fullName: true, dni: true } },
+        student: {
+          select: {
+            id: true,
+            fullName: true,
+            dni: true,
+            representativeName: true,
+            representativeDocumentType: true,
+            representativeDocumentNumber: true,
+            relationship: true,
+            relationshipOther: true,
+          },
+        },
         group: {
           select: { id: true, reusableGroup: { select: { name: true } } },
         },
@@ -128,6 +185,60 @@ export class PaymentsService {
       orderBy: [{ paymentDate: 'desc' }, { id: 'desc' }],
     });
   }
+  async uploadEvidence(
+    paymentId: number,
+    file: Express.Multer.File | undefined,
+  ) {
+    if (!file) throw new BadRequestException('Payment evidence is required');
+    const payment = await this.prisma.payment.findUnique({
+      where: { id: paymentId },
+      select: { id: true, paymentEvidenceKey: true },
+    });
+    if (!payment) throw new NotFoundException();
+    const key = await this.storage.uploadPaymentEvidence(paymentId, file);
+    const originalName = file.originalname
+      .replace(/[\u0000-\u001f\u007f]/g, '')
+      .slice(0, 255);
+    try {
+      const updated = await this.prisma.payment.update({
+        where: { id: paymentId },
+        data: {
+          paymentEvidenceKey: key,
+          paymentEvidenceOriginalName: originalName || 'evidence',
+          paymentEvidenceMimeType: file.mimetype,
+        },
+      });
+      if (payment.paymentEvidenceKey)
+        await this.storage.delete(payment.paymentEvidenceKey);
+      return updated;
+    } catch (error) {
+      await this.storage.delete(key);
+      throw error;
+    }
+  }
+
+  async evidence(paymentId: number) {
+    const payment = await this.prisma.payment.findUnique({
+      where: { id: paymentId },
+      select: {
+        paymentEvidenceKey: true,
+        paymentEvidenceOriginalName: true,
+        paymentEvidenceMimeType: true,
+      },
+    });
+    if (
+      !payment?.paymentEvidenceKey ||
+      !payment.paymentEvidenceOriginalName ||
+      !payment.paymentEvidenceMimeType
+    )
+      throw new NotFoundException();
+    const stored = await this.storage.get(payment.paymentEvidenceKey);
+    return {
+      body: stored.body,
+      mimeType: payment.paymentEvidenceMimeType,
+      originalName: payment.paymentEvidenceOriginalName,
+    };
+  }
   async receipt(paymentId: number) {
     const payment = await this.prisma.payment.findUnique({
       where: { id: paymentId },
@@ -155,6 +266,7 @@ export class PaymentsService {
         documentType: payment.payerDocumentType,
         documentNumber: payment.payerDocumentNumber,
         relationship: payment.payerRelationship,
+        relationshipOther: payment.payerRelationshipOther,
       },
       student: {
         name: payment.enrollment.student.fullName,
@@ -188,34 +300,7 @@ export class PaymentsService {
     if (!body || typeof body !== 'object' || Array.isArray(body))
       throw new BadRequestException();
     const input = body as Record<string, unknown>;
-    const payerName = optionalText(input.payerName, 150);
-    const payerDocumentNumber = optionalText(input.payerDocumentNumber, 30);
-    if (!payerName || !payerDocumentNumber)
-      throw new BadRequestException('Missing payer information');
-    if (
-      !Object.values(ReceiptDocumentType).includes(
-        input.payerDocumentType as ReceiptDocumentType,
-      )
-    )
-      throw new BadRequestException('Invalid payer document type');
-    const payerDocumentType = input.payerDocumentType as ReceiptDocumentType;
-    const documentValid =
-      payerDocumentType === ReceiptDocumentType.DNI
-        ? /^\d{8}$/.test(payerDocumentNumber)
-        : /^[A-Za-z0-9]{6,12}$/.test(payerDocumentNumber);
-    if (!documentValid)
-      throw new BadRequestException('Invalid payer document number');
-    const payerRelationship =
-      input.payerRelationship === undefined || input.payerRelationship === ''
-        ? null
-        : input.payerRelationship;
-    if (
-      payerRelationship !== null &&
-      !Object.values(ReceiptRelationship).includes(
-        payerRelationship as ReceiptRelationship,
-      )
-    )
-      throw new BadRequestException('Invalid payer relationship');
+    const payer = payerData(input);
 
     await this.prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<
@@ -241,10 +326,7 @@ export class PaymentsService {
       await tx.payment.update({
         where: { id: paymentId },
         data: {
-          payerName,
-          payerDocumentType,
-          payerDocumentNumber,
-          payerRelationship: payerRelationship as ReceiptRelationship | null,
+          ...payer,
           receiptNumber: `REC-${year}-${String(counter.lastValue).padStart(6, '0')}`,
           receiptGeneratedAt: new Date(),
         },
@@ -312,6 +394,7 @@ export class PaymentsService {
     }
     const reference = optionalText(input.reference, 200),
       notes = optionalText(input.notes, 1000);
+    const payer = payerData(input);
     return this.prisma.$transaction(
       async (tx) => {
         // Serialize payments for this enrollment so concurrent requests cannot overpay.
@@ -342,8 +425,16 @@ export class PaymentsService {
           throw new BadRequestException(
             'Multiple installments require full payment',
           );
+        const year = new Date().getUTCFullYear();
+        const counter = await tx.receiptCounter.upsert({
+          where: { year },
+          create: { year, lastValue: charges.length },
+          update: { lastValue: { increment: charges.length } },
+        });
+        const firstReceiptValue = counter.lastValue - charges.length + 1;
+        const generatedAt = new Date();
         const payments = [];
-        for (const charge of charges) {
+        for (const [index, charge] of charges.entries()) {
           payments.push(
             await tx.payment.create({
               data: {
@@ -355,6 +446,9 @@ export class PaymentsService {
                 paymentMethod: input.paymentMethod as PaymentMethod,
                 reference,
                 notes,
+                ...payer,
+                receiptNumber: `REC-${year}-${String(firstReceiptValue + index).padStart(6, '0')}`,
+                receiptGeneratedAt: generatedAt,
               },
             }),
           );

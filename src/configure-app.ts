@@ -11,7 +11,7 @@ export function configureApp(app: INestApplication) {
     if (
       !['GET', 'HEAD', 'OPTIONS'].includes(request.method) &&
       (request.get('X-Requested-With') !== 'Aristoteles' ||
-        !request.is('application/json'))
+        (!request.is('application/json') && !request.is('multipart/form-data')))
     ) {
       response.status(403).json({ message: 'Forbidden' });
       return;

@@ -13,6 +13,7 @@ describe('Authentication and role authorization (PostgreSQL)', () => {
   let app: INestApplication<App>;
   let prisma: PrismaService;
   const prefix = `auth-test-${randomUUID()}`;
+  const guardianTestDni = `g-${randomUUID().slice(0, 20)}`;
   const password = 'test-password-2026';
   let adminCookie: string[];
   let studentCookie: string[];
@@ -41,10 +42,14 @@ describe('Authentication and role authorization (PostgreSQL)', () => {
     });
   });
   afterAll(async () => {
-    if (prisma)
+    if (prisma) {
+      await prisma.student.deleteMany({
+        where: { dni: guardianTestDni },
+      });
       await prisma.user.deleteMany({
         where: { username: { startsWith: prefix } },
       });
+    }
     if (app) await app.close();
     if (prisma) await prisma.$disconnect();
   });
@@ -121,6 +126,10 @@ describe('Authentication and role authorization (PostgreSQL)', () => {
         (user: Record<string, unknown>) => !('passwordHash' in user),
       ),
     ).toBe(true);
+    const people = await get('/admin/people')
+      .set('Cookie', adminCookie)
+      .expect(200);
+    expect(Array.isArray(people.body)).toBe(true);
   });
   it('denies student/teacher admin APIs, preserves the student dashboard', async () => {
     for (const cookie of [studentCookie, teacherCookie]) {
@@ -130,6 +139,51 @@ describe('Authentication and role authorization (PostgreSQL)', () => {
     }
     await get('/dashboard').set('Cookie', studentCookie).expect(200);
     await get('/dashboard').set('Cookie', teacherCookie).expect(403);
+  });
+  it('creates and edits persisted guardian document information', async () => {
+    const input = {
+      role: 'STUDENT',
+      dni: guardianTestDni,
+      firstName: 'Guardian',
+      lastName: 'Test',
+      birthDate: '2012-05-10',
+      gender: 'OTHER',
+      representativeName: 'Juan Pérez',
+      representativeDocumentType: 'DNI',
+      representativeDocumentNumber: '76372489',
+      relationship: 'FATHER',
+      primaryPhone: '999999999',
+      isActive: true,
+      createAccess: false,
+    };
+    const created = await post('/admin/people')
+      .set('Cookie', adminCookie)
+      .send(input)
+      .expect(201);
+    const id = (created.body as { id: number }).id;
+    await post(`/admin/people/students/${id}`)
+      .set('Cookie', adminCookie)
+      .send({
+        ...input,
+        role: undefined,
+        createAccess: undefined,
+        representativeName: 'María Pérez',
+        representativeDocumentType: 'CE',
+        representativeDocumentNumber: 'CE123456',
+        relationship: 'OTHER',
+        relationshipOther: 'Apoderada',
+      })
+      .expect(201);
+    const stored = await prisma.student.findUniqueOrThrow({ where: { id } });
+    expect(stored).toEqual(
+      expect.objectContaining({
+        representativeName: 'María Pérez',
+        representativeDocumentType: 'CE',
+        representativeDocumentNumber: 'CE123456',
+        relationship: 'OTHER',
+        relationshipOther: 'Apoderada',
+      }),
+    );
   });
   it('checks current database role and active status on every request', async () => {
     await prisma.user.update({

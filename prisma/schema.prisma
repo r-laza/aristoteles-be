@@ -8,27 +8,29 @@ datasource db {
 }
 
 model Student {
-  id                  Int                @id @default(autoincrement())
-  fullName            String
-  initials            String
-  dni                 String             @unique
-  firstName           String
-  lastName            String
-  birthDate           DateTime           @db.Date
-  gender              Gender
-  representativeName  String
-  relationship        Relationship
-  relationshipOther   String?
-  primaryPhone        String
-  secondaryPhone      String?
-  isActive            Boolean            @default(true)
-  createdAt           DateTime           @default(now())
-  updatedAt           DateTime           @updatedAt
-  userId              Int?               @unique
-  user                User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
-  enrollments         CourseEnrollment[]
-  academicEnrollments Enrollment[]
-  activities          Activity[]
+  id                           Int                  @id @default(autoincrement())
+  fullName                     String
+  initials                     String
+  dni                          String               @unique
+  firstName                    String
+  lastName                     String
+  birthDate                    DateTime             @db.Date
+  gender                       Gender
+  representativeName           String
+  representativeDocumentType   ReceiptDocumentType?
+  representativeDocumentNumber String?
+  relationship                 Relationship
+  relationshipOther            String?
+  primaryPhone                 String
+  secondaryPhone               String?
+  isActive                     Boolean              @default(true)
+  createdAt                    DateTime             @default(now())
+  updatedAt                    DateTime             @updatedAt
+  userId                       Int?                 @unique
+  user                         User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
+  enrollments                  CourseEnrollment[]
+  academicEnrollments          Enrollment[]
+  activities                   Activity[]
 }
 
 enum Gender {
@@ -184,6 +186,8 @@ enum PaymentMethod {
   CASH
   TRANSFER
   CARD
+  YAPE
+  PLIN
   OTHER
 }
 
@@ -206,23 +210,27 @@ enum ReceiptRelationship {
 }
 
 model Payment {
-  paymentType         PaymentType          @default(ENROLLMENT)
-  period              String?
-  id                  Int                  @id @default(autoincrement())
-  enrollmentId        Int
-  enrollment          Enrollment           @relation(fields: [enrollmentId], references: [id])
-  amount              Decimal              @db.Decimal(12, 2)
-  paymentDate         DateTime             @db.Date
-  paymentMethod       PaymentMethod
-  reference           String?
-  notes               String?
-  payerName           String?
-  payerDocumentType   ReceiptDocumentType?
-  payerDocumentNumber String?
-  payerRelationship   ReceiptRelationship?
-  receiptNumber       String?              @unique
-  receiptGeneratedAt  DateTime?
-  createdAt           DateTime             @default(now())
+  paymentType                 PaymentType          @default(ENROLLMENT)
+  period                      String?
+  id                          Int                  @id @default(autoincrement())
+  enrollmentId                Int
+  enrollment                  Enrollment           @relation(fields: [enrollmentId], references: [id])
+  amount                      Decimal              @db.Decimal(12, 2)
+  paymentDate                 DateTime             @db.Date
+  paymentMethod               PaymentMethod
+  reference                   String?
+  notes                       String?
+  payerName                   String?
+  payerDocumentType           ReceiptDocumentType?
+  payerDocumentNumber         String?
+  payerRelationship           ReceiptRelationship?
+  payerRelationshipOther      String?
+  paymentEvidenceKey          String?
+  paymentEvidenceOriginalName String?
+  paymentEvidenceMimeType     String?
+  receiptNumber               String?              @unique
+  receiptGeneratedAt          DateTime?
+  createdAt                   DateTime             @default(now())
 
   @@index([enrollmentId, paymentDate])
 }

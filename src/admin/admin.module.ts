@@ -10,7 +10,12 @@ import {
   Param,
   Post,
 } from '@nestjs/common';
-import { Gender, Prisma, Relationship } from '@prisma/client';
+import {
+  Gender,
+  Prisma,
+  ReceiptDocumentType,
+  Relationship,
+} from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { Roles } from '../auth/roles.guard';
 import { publicUserSelect } from '../auth/auth.types';
@@ -280,6 +285,25 @@ export class AdminPeopleService {
       !Object.values(Relationship).includes(input.relationship as Relationship)
     )
       throw new BadRequestException('Invalid relationship');
+    if (
+      !Object.values(ReceiptDocumentType).includes(
+        input.representativeDocumentType as ReceiptDocumentType,
+      )
+    )
+      throw new BadRequestException('Invalid representative document type');
+    const representativeDocumentType =
+      input.representativeDocumentType as ReceiptDocumentType;
+    const representativeDocumentNumber = text(
+      input,
+      'representativeDocumentNumber',
+      30,
+    );
+    const representativeDocumentValid =
+      representativeDocumentType === ReceiptDocumentType.DNI
+        ? /^\d{8}$/.test(representativeDocumentNumber)
+        : /^[A-Za-z0-9]{6,12}$/.test(representativeDocumentNumber);
+    if (!representativeDocumentValid)
+      throw new BadRequestException('Invalid representative document number');
     return {
       dni: text(input, 'dni', 30),
       firstName,
@@ -289,6 +313,8 @@ export class AdminPeopleService {
       birthDate: dateOnly(input.birthDate),
       gender: input.gender as Gender,
       representativeName: text(input, 'representativeName'),
+      representativeDocumentType,
+      representativeDocumentNumber,
       relationship: input.relationship as Relationship,
       relationshipOther:
         input.relationship === 'OTHER'
