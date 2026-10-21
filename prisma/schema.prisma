@@ -106,37 +106,69 @@ model User {
 
 model AcademicCycle {
   feeId       Int?
-  fee         EnrollmentFee? @relation(fields: [feeId], references: [id], onDelete: Restrict)
-  id          Int            @id @default(autoincrement())
+  fee         EnrollmentFee?        @relation(fields: [feeId], references: [id], onDelete: Restrict)
+  id          Int                   @id @default(autoincrement())
   name        String
-  startDate   DateTime       @db.Date
-  endDate     DateTime       @db.Date
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
+  startDate   DateTime              @db.Date
+  endDate     DateTime              @db.Date
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
   groups      CycleGroup[]
   enrollments Enrollment[]
+  branches    AcademicCycleBranch[]
+}
+
+model Branch {
+  id            Int                   @id @default(autoincrement())
+  name          String                @unique
+  address       String?
+  details       String?
+  isActive      Boolean               @default(true)
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+  groups        Group[]
+  cycles        AcademicCycleBranch[]
+  enrollments   Enrollment[]
+  transfersFrom EnrollmentTransfer[]  @relation("PreviousBranch")
+  transfersTo   EnrollmentTransfer[]  @relation("NewBranch")
+}
+
+model AcademicCycleBranch {
+  academicCycleId Int
+  branchId        Int
+  academicCycle   AcademicCycle @relation(fields: [academicCycleId], references: [id], onDelete: Cascade)
+  branch          Branch        @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  createdAt       DateTime      @default(now())
+
+  @@id([academicCycleId, branchId])
+  @@index([branchId])
 }
 
 model Group {
-  id     Int          @id @default(autoincrement())
-  name   String       @unique
-  cycles CycleGroup[]
+  id       Int          @id @default(autoincrement())
+  name     String
+  branchId Int
+  branch   Branch       @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  cycles   CycleGroup[]
 
+  @@unique([branchId, name])
   @@map("ReusableGroup")
 }
 
 model CycleGroup {
   pensionId       Int?
-  pension         Pension?        @relation(fields: [pensionId], references: [id], onDelete: Restrict)
-  id              Int             @id @default(autoincrement())
+  pension         Pension?             @relation(fields: [pensionId], references: [id], onDelete: Restrict)
+  id              Int                  @id @default(autoincrement())
   reusableGroupId Int
-  reusableGroup   Group           @relation(fields: [reusableGroupId], references: [id])
+  reusableGroup   Group                @relation(fields: [reusableGroupId], references: [id])
   fees            EnrollmentFee[]
   academicCycleId Int
-  academicCycle   AcademicCycle   @relation(fields: [academicCycleId], references: [id])
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+  academicCycle   AcademicCycle        @relation(fields: [academicCycleId], references: [id])
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
   enrollments     Enrollment[]
+  transfersFrom   EnrollmentTransfer[] @relation("PreviousGroup")
+  transfersTo     EnrollmentTransfer[] @relation("NewGroup")
 
   @@unique([academicCycleId, reusableGroupId])
   @@unique([id, academicCycleId])
@@ -150,36 +182,76 @@ enum EnrollmentStatus {
 model Enrollment {
   enrollmentFeeName      String?
   pensionName            String?
-  pensionStartDate       DateTime?        @db.Date
-  pensionEndDate         DateTime?        @db.Date
-  pensionBaseAmount      Decimal?         @db.Decimal(12, 2)
-  pensionDiscountPercent Decimal?         @db.Decimal(5, 2)
-  pensionDiscountAmount  Decimal?         @db.Decimal(12, 2)
-  pensionAmount          Decimal?         @db.Decimal(12, 2)
+  pensionStartDate       DateTime?            @db.Date
+  pensionEndDate         DateTime?            @db.Date
+  pensionBaseAmount      Decimal?             @db.Decimal(12, 2)
+  pensionDiscountPercent Decimal?             @db.Decimal(5, 2)
+  pensionDiscountAmount  Decimal?             @db.Decimal(12, 2)
+  pensionAmount          Decimal?             @db.Decimal(12, 2)
   pensionDueDay          Int?
   payments               Payment[]
-  id                     Int              @id @default(autoincrement())
+  pensionObligations     PensionObligation[]
+  transfers              EnrollmentTransfer[]
+  id                     Int                  @id @default(autoincrement())
   studentId              Int
-  student                Student          @relation(fields: [studentId], references: [id])
+  student                Student              @relation(fields: [studentId], references: [id])
   academicCycleId        Int
-  academicCycle          AcademicCycle    @relation(fields: [academicCycleId], references: [id])
+  academicCycle          AcademicCycle        @relation(fields: [academicCycleId], references: [id])
+  branchId               Int
+  branch                 Branch               @relation(fields: [branchId], references: [id], onDelete: Restrict)
   groupId                Int
-  group                  CycleGroup       @relation(fields: [groupId, academicCycleId], references: [id, academicCycleId])
+  group                  CycleGroup           @relation(fields: [groupId, academicCycleId], references: [id, academicCycleId])
   feeId                  Int
-  fee                    EnrollmentFee    @relation(fields: [feeId], references: [id])
-  baseAmount             Decimal          @db.Decimal(12, 2)
-  discountPercent        Decimal?         @db.Decimal(5, 2)
-  discountAmount         Decimal          @default(0) @db.Decimal(12, 2)
+  fee                    EnrollmentFee        @relation(fields: [feeId], references: [id])
+  baseAmount             Decimal              @db.Decimal(12, 2)
+  discountPercent        Decimal?             @db.Decimal(5, 2)
+  discountAmount         Decimal              @default(0) @db.Decimal(12, 2)
   discountReason         String?
-  finalAmount            Decimal          @db.Decimal(12, 2)
-  status                 EnrollmentStatus @default(ACTIVE)
-  createdAt              DateTime         @default(now())
-  updatedAt              DateTime         @updatedAt
+  finalAmount            Decimal              @db.Decimal(12, 2)
+  status                 EnrollmentStatus     @default(ACTIVE)
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
 
   @@unique([studentId, academicCycleId])
   @@index([academicCycleId])
+  @@index([branchId])
   @@index([groupId, academicCycleId])
   @@map("AcademicEnrollment")
+}
+
+model EnrollmentTransfer {
+  id               Int        @id @default(autoincrement())
+  enrollmentId     Int
+  enrollment       Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  previousBranchId Int
+  previousBranch   Branch     @relation("PreviousBranch", fields: [previousBranchId], references: [id], onDelete: Restrict)
+  previousGroupId  Int
+  previousGroup    CycleGroup @relation("PreviousGroup", fields: [previousGroupId], references: [id], onDelete: Restrict)
+  newBranchId      Int
+  newBranch        Branch     @relation("NewBranch", fields: [newBranchId], references: [id], onDelete: Restrict)
+  newGroupId       Int
+  newGroup         CycleGroup @relation("NewGroup", fields: [newGroupId], references: [id], onDelete: Restrict)
+  transferDate     DateTime   @db.Date
+  reason           String?
+  createdAt        DateTime   @default(now())
+
+  @@index([enrollmentId, transferDate])
+}
+
+model PensionObligation {
+  id             Int        @id @default(autoincrement())
+  enrollmentId   Int
+  enrollment     Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  period         String
+  name           String
+  baseAmount     Decimal    @db.Decimal(12, 2)
+  discountAmount Decimal    @default(0) @db.Decimal(12, 2)
+  amount         Decimal    @db.Decimal(12, 2)
+  dueDate        DateTime   @db.Date
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  @@unique([enrollmentId, period])
 }
 
 enum PaymentMethod {
@@ -231,6 +303,8 @@ model Payment {
   receiptNumber               String?              @unique
   receiptGeneratedAt          DateTime?
   createdAt                   DateTime             @default(now())
+  branchName                  String?
+  groupName                   String?
 
   @@index([enrollmentId, paymentDate])
 }

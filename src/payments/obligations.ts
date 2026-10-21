@@ -82,6 +82,13 @@ export function obligations(
       paymentType: string;
       period: string | null;
     }[];
+    pensionObligations?: {
+      period: string;
+      baseAmount: Prisma.Decimal;
+      discountAmount: Prisma.Decimal;
+      amount: Prisma.Decimal;
+      dueDate: Date;
+    }[];
   },
   today = institutionToday(),
 ) {
@@ -104,7 +111,16 @@ export function obligations(
       dueDate: null,
     },
   ];
-  if (enrollment.pensionAmount !== null && enrollment.pensionDueDay !== null) {
+  if (enrollment.pensionObligations?.length) {
+    for (const obligation of enrollment.pensionObligations) {
+      definitions.push({
+        paymentType: 'PENSION', period: obligation.period,
+        amount: obligation.amount, originalAmount: obligation.baseAmount,
+        discountAmount: obligation.discountAmount,
+        dueDate: obligation.dueDate.toISOString().slice(0, 10),
+      });
+    }
+  } else if (enrollment.pensionAmount !== null && enrollment.pensionDueDay !== null) {
     for (const period of cyclePeriods(
       enrollment.pensionStartDate ?? enrollment.academicCycle.startDate,
       enrollment.pensionEndDate ?? enrollment.academicCycle.endDate,

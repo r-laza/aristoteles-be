@@ -119,6 +119,7 @@ export class PaymentsService {
           },
           orderBy: { paymentDate: 'desc' },
         },
+        pensionObligations: { orderBy: { period: 'asc' } },
       },
       orderBy: { student: { fullName: 'asc' } },
     });
@@ -251,12 +252,16 @@ export class PaymentsService {
               select: { reusableGroup: { select: { name: true } } },
             },
             fee: { select: { name: true } },
+            pensionObligations: true,
           },
         },
       },
     });
     if (!payment?.receiptNumber) throw new NotFoundException();
     const pension = payment.paymentType === 'PENSION';
+    const pensionObligation = pension
+      ? payment.enrollment.pensionObligations.find((item) => item.period === payment.period)
+      : null;
     return {
       paymentId: payment.id,
       receiptNumber: payment.receiptNumber,
@@ -270,7 +275,8 @@ export class PaymentsService {
       },
       student: {
         name: payment.enrollment.student.fullName,
-        group: payment.enrollment.group.reusableGroup.name,
+        group: payment.groupName ?? payment.enrollment.group.reusableGroup.name,
+        branch: payment.branchName,
         cycle: payment.enrollment.academicCycle.name,
       },
       payment: {
@@ -283,14 +289,14 @@ export class PaymentsService {
         paymentType: payment.paymentType,
         period: payment.period,
         name: pension
-          ? payment.enrollment.pensionName
+          ? pensionObligation?.name ?? payment.enrollment.pensionName
           : (payment.enrollment.enrollmentFeeName ??
             payment.enrollment.fee.name),
         originalAmount: pension
-          ? payment.enrollment.pensionBaseAmount
+          ? pensionObligation?.baseAmount ?? payment.enrollment.pensionBaseAmount
           : payment.enrollment.baseAmount,
         discountAmount: pension
-          ? (payment.enrollment.pensionDiscountAmount ?? 0)
+          ? (pensionObligation?.discountAmount ?? payment.enrollment.pensionDiscountAmount ?? 0)
           : payment.enrollment.discountAmount,
         paidAmount: payment.amount,
       },
@@ -404,7 +410,7 @@ export class PaymentsService {
         if (!locked.length) throw new NotFoundException();
         const enrollment = await tx.enrollment.findUniqueOrThrow({
           where: { id: enrollmentId },
-          include: { academicCycle: true, payments: true },
+          include: { academicCycle: true, payments: true, pensionObligations: { orderBy: { period: 'asc' } }, branch: true, group: { include: { reusableGroup: true } } },
         });
         const charges = obligations(enrollment).filter(
           (charge) =>
@@ -449,6 +455,8 @@ export class PaymentsService {
                 ...payer,
                 receiptNumber: `REC-${year}-${String(firstReceiptValue + index).padStart(6, '0')}`,
                 receiptGeneratedAt: generatedAt,
+                branchName: enrollment.branch.name,
+                groupName: enrollment.group.reusableGroup.name,
               },
             }),
           );

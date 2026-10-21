@@ -67,6 +67,18 @@ export class CyclesController {
   ) {
     return this.cycles.enroll(id, body);
   }
+  @Post('enrollments/:enrollmentId/transfer') transfer(
+    @Param('enrollmentId', ParseIntPipe) enrollmentId: number,
+    @Body() body: unknown,
+  ) { return this.cycles.transfer(enrollmentId, body); }
+}
+@Controller('admin/branches')
+@Roles('ADMIN')
+export class BranchesController {
+  constructor(private readonly cycles: CyclesService) {}
+  @Get() list() { return this.cycles.branches(); }
+  @Post() create(@Body() body: unknown) { return this.cycles.saveBranch(body); }
+  @Post(':id') edit(@Param('id', ParseIntPipe) id: number, @Body() body: unknown) { return this.cycles.saveBranch(body, id); }
 }
 @Controller('admin/groups')
 @Roles('ADMIN')
@@ -134,6 +146,7 @@ export class PensionsController {
     GroupsController,
     FeesController,
     PensionsController,
+    BranchesController,
   ],
   providers: [CyclesService],
 })
