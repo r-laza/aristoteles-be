@@ -12,9 +12,9 @@ COPY package.json package-lock.json ./
 COPY prisma ./prisma
 RUN npm ci
 
-COPY nest-cli.json tsconfig.json tsconfig.build.json ./
+COPY nest-cli.json tsconfig.json tsconfig.build.json tsconfig.seed-admin.json ./
 COPY src ./src
-RUN npx prisma generate && npm run build
+RUN npx prisma generate && npm run build && npm run build:seed:admin
 
 FROM base AS production-dependencies
 
@@ -32,6 +32,7 @@ WORKDIR /app
 
 COPY --from=production-dependencies --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
+COPY --from=build --chown=node:node /app/dist-seed-admin ./dist-seed-admin
 COPY --chown=node:node package.json package-lock.json ./
 COPY --chown=node:node prisma ./prisma
 

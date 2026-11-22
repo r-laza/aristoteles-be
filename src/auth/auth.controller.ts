@@ -15,7 +15,9 @@ import type { AuthRequest } from './auth.types';
 
 const cookieOptions = (): CookieOptions => ({
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
+  secure:
+    process.env.NODE_ENV === 'production' &&
+    process.env.ALLOW_INSECURE_COOKIES !== 'true',
   sameSite: 'strict',
   path: '/api',
 });
