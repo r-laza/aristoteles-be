@@ -32,6 +32,7 @@ model Student {
   academicEnrollments          Enrollment[]
   activities                   Activity[]
   notificationLogs             NotificationLog[]
+  voucherCounters              VoucherCounter[]
 }
 
 enum Gender {
@@ -106,17 +107,18 @@ model User {
 }
 
 model AcademicCycle {
-  feeId       Int?
-  fee         EnrollmentFee?        @relation(fields: [feeId], references: [id], onDelete: Restrict)
-  id          Int                   @id @default(autoincrement())
-  name        String
-  startDate   DateTime              @db.Date
-  endDate     DateTime              @db.Date
-  createdAt   DateTime              @default(now())
-  updatedAt   DateTime              @updatedAt
-  groups      CycleGroup[]
-  enrollments Enrollment[]
-  branches    AcademicCycleBranch[]
+  feeId           Int?
+  fee             EnrollmentFee?        @relation(fields: [feeId], references: [id], onDelete: Restrict)
+  id              Int                   @id @default(autoincrement())
+  name            String
+  startDate       DateTime              @db.Date
+  endDate         DateTime              @db.Date
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  groups          CycleGroup[]
+  enrollments     Enrollment[]
+  branches        AcademicCycleBranch[]
+  voucherCounters VoucherCounter[]
 }
 
 model Branch {
@@ -332,6 +334,7 @@ model Payment {
   paymentEvidenceKey          String?
   paymentEvidenceOriginalName String?
   paymentEvidenceMimeType     String?
+  paymentEvidenceStorage      String?
   receiptNumber               String?              @unique
   receiptGeneratedAt          DateTime?
   createdAt                   DateTime             @default(now())
@@ -345,6 +348,17 @@ model ReceiptCounter {
   year      Int      @id
   lastValue Int
   updatedAt DateTime @updatedAt
+}
+
+model VoucherCounter {
+  academicCycleId Int
+  studentId       Int
+  lastValue       Int           @default(0)
+  updatedAt       DateTime      @updatedAt
+  academicCycle   AcademicCycle @relation(fields: [academicCycleId], references: [id], onDelete: Cascade)
+  student         Student       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@id([academicCycleId, studentId])
 }
 
 model EnrollmentFee {

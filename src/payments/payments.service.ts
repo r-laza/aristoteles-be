@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import {
@@ -12,7 +13,18 @@ import {
 } from '@prisma/client';
 import { obligations, paymentStatus } from './obligations';
 import { PrismaService } from '../database/prisma.service';
-import { StorageService } from '../storage/storage.service';
+import {
+  safeFolderName,
+  sanitizedStorageKey,
+  StorageService,
+} from '../storage/storage.service';
+
+const NEW_PAYMENT_METHODS: readonly PaymentMethod[] = [
+  PaymentMethod.CASH,
+  PaymentMethod.TRANSFER,
+  PaymentMethod.YAPE,
+  PaymentMethod.PLIN,
+];
 
 function optionalText(value: unknown, max: number): string | null {
   if (value === undefined || value === null || value === '') return null;
@@ -64,6 +76,8 @@ function payerData(input: Record<string, unknown>) {
 }
 @Injectable()
 export class PaymentsService {
+  private readonly logger = new Logger(PaymentsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
@@ -193,29 +207,100 @@ export class PaymentsService {
     if (!file) throw new BadRequestException('Payment evidence is required');
     const payment = await this.prisma.payment.findUnique({
       where: { id: paymentId },
-      select: { id: true, paymentEvidenceKey: true },
+      select: {
+        id: true,
+        paymentEvidenceKey: true,
+        paymentEvidenceStorage: true,
+        enrollment: {
+          select: {
+            studentId: true,
+            student: { select: { fullName: true } },
+            academicCycle: { select: { id: true, name: true } },
+          },
+        },
+      },
     });
     if (!payment) throw new NotFoundException();
-    const key = await this.storage.uploadPaymentEvidence(paymentId, file);
+    const cycleId = payment.enrollment.academicCycle.id;
+    const cycleName = payment.enrollment.academicCycle.name;
+    const studentId = payment.enrollment.studentId;
+    const studentName = payment.enrollment.student.fullName;
+    const [otherCycles, otherStudents, counter] = await Promise.all([
+      this.prisma.academicCycle.findMany({
+        where: { id: { not: cycleId } },
+        select: { name: true },
+      }),
+      this.prisma.student.findMany({
+        where: {
+          id: { not: studentId },
+          academicEnrollments: { some: { academicCycleId: cycleId } },
+        },
+        select: { fullName: true },
+      }),
+      this.prisma.voucherCounter.upsert({
+        where: {
+          academicCycleId_studentId: {
+            academicCycleId: cycleId,
+            studentId,
+          },
+        },
+        create: { academicCycleId: cycleId, studentId, lastValue: 1 },
+        update: { lastValue: { increment: 1 } },
+      }),
+    ]);
+    const duplicateCycleName = otherCycles.some(
+      (cycle) => safeFolderName(cycle.name) === safeFolderName(cycleName),
+    );
+    const duplicateStudentName = otherStudents.some(
+      (student) =>
+        safeFolderName(student.fullName) === safeFolderName(studentName),
+    );
+    const uploaded = await this.storage.uploadPaymentEvidence(
+      {
+        cycleId,
+        cycleName,
+        duplicateCycleName,
+        studentId,
+        studentName,
+        duplicateStudentName,
+        sequence: counter.lastValue,
+      },
+      file,
+    );
     const originalName = file.originalname
       .replace(/[\u0000-\u001f\u007f]/g, '')
       .slice(0, 255);
+    let updated;
     try {
-      const updated = await this.prisma.payment.update({
+      updated = await this.prisma.payment.update({
         where: { id: paymentId },
         data: {
-          paymentEvidenceKey: key,
+          paymentEvidenceKey: uploaded.key,
+          paymentEvidenceStorage: uploaded.location,
           paymentEvidenceOriginalName: originalName || 'evidence',
           paymentEvidenceMimeType: file.mimetype,
         },
       });
-      if (payment.paymentEvidenceKey)
-        await this.storage.delete(payment.paymentEvidenceKey);
-      return updated;
     } catch (error) {
-      await this.storage.delete(key);
+      await this.storage.delete(uploaded.key, uploaded.location);
       throw error;
     }
+    if (payment.paymentEvidenceKey) {
+      try {
+        await this.storage.delete(
+          payment.paymentEvidenceKey,
+          payment.paymentEvidenceStorage as 'local' | 's3' | null,
+        );
+      } catch (error) {
+        // The database already points at the new voucher. Keep it accessible and
+        // report the orphaned old object for operational cleanup.
+        this.logger.error(
+          `Failed to delete replaced voucher ${sanitizedStorageKey(payment.paymentEvidenceKey)}`,
+          error instanceof Error ? error.stack : String(error),
+        );
+      }
+    }
+    return updated;
   }
 
   async evidence(paymentId: number) {
@@ -225,6 +310,7 @@ export class PaymentsService {
         paymentEvidenceKey: true,
         paymentEvidenceOriginalName: true,
         paymentEvidenceMimeType: true,
+        paymentEvidenceStorage: true,
       },
     });
     if (
@@ -233,7 +319,10 @@ export class PaymentsService {
       !payment.paymentEvidenceMimeType
     )
       throw new NotFoundException();
-    const stored = await this.storage.get(payment.paymentEvidenceKey);
+    const stored = await this.storage.get(
+      payment.paymentEvidenceKey,
+      payment.paymentEvidenceStorage as 'local' | 's3' | null,
+    );
     return {
       body: stored.body,
       mimeType: payment.paymentEvidenceMimeType,
@@ -363,11 +452,7 @@ export class PaymentsService {
       paymentDate.toISOString().slice(0, 10) !== input.paymentDate
     )
       throw new BadRequestException('Invalid date');
-    if (
-      !Object.values(PaymentMethod).includes(
-        input.paymentMethod as PaymentMethod,
-      )
-    )
+    if (!NEW_PAYMENT_METHODS.includes(input.paymentMethod as PaymentMethod))
       throw new BadRequestException('Invalid method');
     const paymentType = input.paymentType ?? 'ENROLLMENT';
     if (paymentType !== 'ENROLLMENT' && paymentType !== 'PENSION')

@@ -234,6 +234,8 @@ describe('Enrollment payments (PostgreSQL)', () => {
       { amount: 'NaN' },
       { paymentDate: '2026-02-30' },
       { paymentMethod: 'INVALID' },
+      { paymentMethod: 'CARD' },
+      { paymentMethod: 'OTHER' },
       { reference: {} },
     ])
       await post({ ...payment, ...changes }).expect(400);
