@@ -52,34 +52,49 @@ export class AdminUsersService {
 
 function object(body: unknown): Record<string, unknown> {
   if (!body || typeof body !== 'object' || Array.isArray(body))
-    throw new BadRequestException('Invalid person fields');
+    throw new BadRequestException({ code: 'VALIDATION_ERROR' });
   return body as Record<string, unknown>;
 }
 
-function text(input: Record<string, unknown>, key: string, max = 200) {
+function invalid(
+  field: string,
+  reason: 'required' | 'tooLong' | 'format',
+): never {
+  throw new BadRequestException({ code: 'VALIDATION_ERROR', field, reason });
+}
+
+function text(
+  input: Record<string, unknown>,
+  key: string,
+  max = 200,
+): string {
   const value = input[key];
-  if (typeof value !== 'string' || !value.trim() || value.trim().length > max)
-    throw new BadRequestException('Invalid person fields');
+  if (typeof value !== 'string' || !value.trim()) invalid(key, 'required');
+  if (value.trim().length > max) invalid(key, 'tooLong');
   return value.trim();
 }
 
-function optionalText(input: Record<string, unknown>, key: string, max = 200) {
+function optionalText(
+  input: Record<string, unknown>,
+  key: string,
+  max = 200,
+): string | null {
   const value = input[key];
   if (value === undefined || value === null || value === '') return null;
-  if (typeof value !== 'string' || value.trim().length > max)
-    throw new BadRequestException('Invalid person fields');
+  if (typeof value !== 'string') invalid(key, 'format');
+  if (value.trim().length > max) invalid(key, 'tooLong');
   return value.trim();
 }
 
-function dateOnly(value: unknown) {
+function dateOnly(value: unknown, field: string): Date {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value))
-    throw new BadRequestException('Invalid person fields');
+    invalid(field, 'format');
   const date = new Date(`${value}T00:00:00.000Z`);
   if (
     !Number.isFinite(date.getTime()) ||
     date.toISOString().slice(0, 10) !== value
   )
-    throw new BadRequestException('Invalid person fields');
+    invalid(field, 'format');
   return date;
 }
 
@@ -278,19 +293,20 @@ export class AdminPeopleService {
     const firstName = text(input, 'firstName');
     const lastName = text(input, 'lastName');
     if (typeof input.isActive !== 'boolean')
-      throw new BadRequestException('Invalid status');
+      invalid('isActive', 'format');
+    const isActive = input.isActive;
     if (!Object.values(Gender).includes(input.gender as Gender))
-      throw new BadRequestException('Invalid gender');
+      invalid('gender', 'format');
     if (
       !Object.values(Relationship).includes(input.relationship as Relationship)
     )
-      throw new BadRequestException('Invalid relationship');
+      invalid('relationship', 'format');
     if (
       !Object.values(ReceiptDocumentType).includes(
         input.representativeDocumentType as ReceiptDocumentType,
       )
     )
-      throw new BadRequestException('Invalid representative document type');
+      invalid('representativeDocumentType', 'format');
     const representativeDocumentType =
       input.representativeDocumentType as ReceiptDocumentType;
     const representativeDocumentNumber = text(
@@ -303,14 +319,14 @@ export class AdminPeopleService {
         ? /^\d{8}$/.test(representativeDocumentNumber)
         : /^[A-Za-z0-9]{6,12}$/.test(representativeDocumentNumber);
     if (!representativeDocumentValid)
-      throw new BadRequestException('Invalid representative document number');
+      invalid('representativeDocumentNumber', 'format');
     return {
       dni: text(input, 'dni', 30),
       firstName,
       lastName,
       fullName: `${firstName} ${lastName}`,
       initials: `${firstName[0]}${lastName[0]}`.toUpperCase(),
-      birthDate: dateOnly(input.birthDate),
+      birthDate: dateOnly(input.birthDate, 'birthDate'),
       gender: input.gender as Gender,
       representativeName: text(input, 'representativeName'),
       representativeDocumentType,
@@ -322,7 +338,7 @@ export class AdminPeopleService {
           : null,
       primaryPhone: text(input, 'primaryPhone', 30),
       secondaryPhone: optionalText(input, 'secondaryPhone', 30),
-      isActive: input.isActive,
+      isActive,
     };
   }
 
@@ -345,8 +361,17 @@ export class AdminPeopleService {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
-      )
-        throw new ConflictException('Person already exists');
+      ) {
+        const target = String(error.meta?.target ?? '');
+        throw new ConflictException({
+          code: 'DUPLICATE',
+          field: target.includes('dni')
+            ? 'dni'
+            : target.includes('username')
+              ? 'username'
+              : undefined,
+        });
+      }
       throw error;
     }
   }
