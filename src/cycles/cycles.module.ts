@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { Roles } from '../auth/roles.guard';
 import { CyclesService } from './cycles.service';
+import { AcademicCycleStatus } from '@prisma/client';
 
 @Controller('admin/cycles')
 @Roles('ADMIN')
@@ -40,6 +41,12 @@ export class CyclesController {
   }
   @Post(':id/delete') delete(@Param('id', ParseIntPipe) id: number) {
     return this.cycles.deleteCycle(id);
+  }
+  @Post(':id/activate') activate(@Param('id', ParseIntPipe) id: number) {
+    return this.cycles.transition(id, AcademicCycleStatus.ACTIVE);
+  }
+  @Post(':id/close') close(@Param('id', ParseIntPipe) id: number) {
+    return this.cycles.transition(id, AcademicCycleStatus.CLOSED);
   }
   @Post(':id') edit(
     @Param('id', ParseIntPipe) id: number,

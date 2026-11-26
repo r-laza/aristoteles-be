@@ -13,11 +13,27 @@ export function cyclePeriods(start: Date, end: Date) {
 
 export function institutionToday() {
   return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Guayaquil',
+    timeZone: 'America/Lima',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
   }).format(new Date());
+}
+
+export function paymentPendingDays(value = process.env.PAYMENT_PENDING_DAYS) {
+  if (value === undefined || value === '') return 7;
+  if (!/^\d+$/.test(value))
+    throw new Error('PAYMENT_PENDING_DAYS must be a non-negative integer');
+  const days = Number(value);
+  if (!Number.isSafeInteger(days))
+    throw new Error('PAYMENT_PENDING_DAYS must be a non-negative integer');
+  return days;
+}
+
+function calendarDatePlusDays(date: string, days: number) {
+  const [year, month, day] = date.split('-').map(Number);
+  const result = new Date(Date.UTC(year, month - 1, day + days));
+  return result.toISOString().slice(0, 10);
 }
 
 export function paymentStatus(
@@ -34,12 +50,12 @@ export function paymentStatus(
         : 'PARTIAL';
 }
 
-// Keep this aligned with the account-level status shown in Gestión de pagos:
-// future pension installments remain in the balance but do not, by themselves,
-// make a student with prior payments appear delinquent.
+// Account-level status shared by the dashboard and Gestión de pagos.
+// Any overdue unpaid charge wins over future pending installments.
 export function accountStatus(
   charges: ReturnType<typeof obligations>,
   today = institutionToday(),
+  warningDays = paymentPendingDays(),
 ) {
   if (!charges.some((charge) => charge.amountDue.greaterThan(0))) return null;
   const pending = charges.filter((charge) => charge.balance.greaterThan(0));
@@ -47,22 +63,11 @@ export function accountStatus(
   if (
     pending.some((charge) => charge.dueDate !== null && charge.dueDate < today)
   )
+    return 'OVERDUE';
+  const warningThrough = calendarDatePlusDays(today, warningDays);
+  if (pending.some((charge) => charge.dueDate === null || charge.dueDate <= warningThrough))
     return 'PENDING';
-  if (pending.some((charge) => charge.amountPaid.greaterThan(0)))
-    return 'PARTIAL';
-  if (
-    pending.some(
-      (charge) =>
-        charge.paymentType === 'ENROLLMENT' ||
-        (charge.dueDate !== null && charge.dueDate <= today),
-    )
-  )
-    return charges.some((charge) => charge.amountPaid.greaterThan(0))
-      ? 'PARTIAL'
-      : 'PENDING';
-  return charges.some((charge) => charge.amountPaid.greaterThan(0))
-    ? 'PAID'
-    : 'PENDING';
+  return 'PAID';
 }
 
 export function obligations(

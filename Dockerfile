@@ -36,6 +36,9 @@ COPY --from=build --chown=node:node /app/dist-seed-admin ./dist-seed-admin
 COPY --chown=node:node package.json package-lock.json ./
 COPY --chown=node:node prisma ./prisma
 
+RUN mkdir -p /app/uploads \
+    && chown -R node:node /app/uploads
+
 USER node
 
 EXPOSE 3000

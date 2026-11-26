@@ -6,12 +6,13 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  AcademicCycleStatus,
   PaymentMethod,
   Prisma,
   ReceiptDocumentType,
   ReceiptRelationship,
 } from '@prisma/client';
-import { obligations, paymentStatus } from './obligations';
+import { accountStatus, institutionToday, obligations } from './obligations';
 import { PrismaService } from '../database/prisma.service';
 import {
   safeFolderName,
@@ -119,6 +120,7 @@ export class PaymentsService {
             representativeDocumentNumber: true,
             relationship: true,
             relationshipOther: true,
+            primaryPhone: true,
           },
         },
         group: {
@@ -148,6 +150,17 @@ export class PaymentsService {
         new Prisma.Decimal(0),
       );
       const balance = amountDue.minus(amountPaid);
+      const overdueBalance = charges
+        .filter(
+          (charge) =>
+            charge.balance.greaterThan(0) &&
+            charge.dueDate !== null &&
+            charge.dueDate < institutionToday(),
+        )
+        .reduce(
+          (sum, charge) => sum.plus(charge.balance),
+          new Prisma.Decimal(0),
+        );
       return {
         id: enrollment.id,
         student: enrollment.student,
@@ -156,7 +169,7 @@ export class PaymentsService {
           name: enrollment.group.reusableGroup.name,
         },
         cycle: enrollment.academicCycle.name,
-        enrollmentFeeName: enrollment.enrollmentFeeName ?? enrollment.fee.name,
+        enrollmentFeeName: enrollment.enrollmentFeeName ?? enrollment.fee?.name ?? null,
         pensionName: enrollment.pensionName,
         pensionMonthlyAmount: enrollment.pensionAmount,
         baseAmount: enrollment.baseAmount,
@@ -165,12 +178,9 @@ export class PaymentsService {
         amountDue,
         amountPaid,
         balance,
+        overdueBalance,
         lastPaymentDate: enrollment.payments[0]?.paymentDate ?? null,
-        status: paymentStatus(
-          balance,
-          amountPaid,
-          charges.some((c) => c.status === 'OVERDUE'),
-        ),
+        status: accountStatus(charges),
       };
     });
     const totals = rows.reduce(
@@ -336,7 +346,7 @@ export class PaymentsService {
         enrollment: {
           include: {
             academicCycle: { select: { name: true } },
-            student: { select: { fullName: true } },
+            student: { select: { fullName: true, primaryPhone: true } },
             group: {
               select: { reusableGroup: { select: { name: true } } },
             },
@@ -361,6 +371,7 @@ export class PaymentsService {
         documentNumber: payment.payerDocumentNumber,
         relationship: payment.payerRelationship,
         relationshipOther: payment.payerRelationshipOther,
+        phone: payment.enrollment.student.primaryPhone,
       },
       student: {
         name: payment.enrollment.student.fullName,
@@ -378,14 +389,17 @@ export class PaymentsService {
         paymentType: payment.paymentType,
         period: payment.period,
         name: pension
-          ? pensionObligation?.name ?? payment.enrollment.pensionName
+          ? (pensionObligation?.name ?? payment.enrollment.pensionName)
           : (payment.enrollment.enrollmentFeeName ??
-            payment.enrollment.fee.name),
+            payment.enrollment.fee?.name),
         originalAmount: pension
-          ? pensionObligation?.baseAmount ?? payment.enrollment.pensionBaseAmount
+          ? (pensionObligation?.baseAmount ??
+            payment.enrollment.pensionBaseAmount)
           : payment.enrollment.baseAmount,
         discountAmount: pension
-          ? (pensionObligation?.discountAmount ?? payment.enrollment.pensionDiscountAmount ?? 0)
+          ? (pensionObligation?.discountAmount ??
+            payment.enrollment.pensionDiscountAmount ??
+            0)
           : payment.enrollment.discountAmount,
         paidAmount: payment.amount,
       },
@@ -410,7 +424,7 @@ export class PaymentsService {
       const year = Number(
         new Intl.DateTimeFormat('en', {
           year: 'numeric',
-          timeZone: 'America/Guayaquil',
+          timeZone: 'America/Lima',
         }).format(new Date()),
       );
       const counter = await tx.receiptCounter.upsert({
@@ -455,12 +469,44 @@ export class PaymentsService {
     if (!NEW_PAYMENT_METHODS.includes(input.paymentMethod as PaymentMethod))
       throw new BadRequestException('Invalid method');
     const paymentType = input.paymentType ?? 'ENROLLMENT';
-    if (paymentType !== 'ENROLLMENT' && paymentType !== 'PENSION')
-      throw new BadRequestException('Invalid payment type');
     const periodPattern = /^\d{4}-(0[1-9]|1[0-2])$/;
     const period = input.period ?? null;
-    let periods: (string | null)[];
-    if (input.periods !== undefined) {
+    let requested: { paymentType: 'ENROLLMENT' | 'PENSION'; period: string | null }[];
+    if (input.obligations !== undefined) {
+      if (
+        !Array.isArray(input.obligations) ||
+        input.obligations.length === 0 ||
+        input.obligations.length > 25 ||
+        input.periods !== undefined
+      )
+        throw new BadRequestException('Invalid payment obligations');
+      requested = input.obligations.map((value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value))
+          throw new BadRequestException('Invalid payment obligations');
+        const obligation = value as Record<string, unknown>;
+        const type = obligation.paymentType;
+        const obligationPeriod = obligation.period ?? null;
+        if (
+          (type !== 'ENROLLMENT' && type !== 'PENSION') ||
+          (type === 'ENROLLMENT' && obligationPeriod !== null) ||
+          (type === 'PENSION' &&
+            (typeof obligationPeriod !== 'string' ||
+              !periodPattern.test(obligationPeriod)))
+        )
+          throw new BadRequestException('Invalid payment obligations');
+        return {
+          paymentType: type,
+          period: obligationPeriod as string | null,
+        };
+      });
+      if (
+        new Set(requested.map((item) => `${item.paymentType}:${item.period ?? ''}`)).size !==
+        requested.length
+      )
+        throw new BadRequestException('Invalid payment obligations');
+    } else if (input.periods !== undefined) {
+      if (paymentType !== 'ENROLLMENT' && paymentType !== 'PENSION')
+        throw new BadRequestException('Invalid payment type');
       if (
         paymentType !== 'PENSION' ||
         period !== null ||
@@ -473,15 +519,22 @@ export class PaymentsService {
         new Set(input.periods).size !== input.periods.length
       )
         throw new BadRequestException('Invalid payment periods');
-      periods = input.periods as string[];
+      requested = (input.periods as string[]).map((value) => ({
+        paymentType: 'PENSION', period: value,
+      }));
     } else {
+      if (paymentType !== 'ENROLLMENT' && paymentType !== 'PENSION')
+        throw new BadRequestException('Invalid payment type');
       if (
         (paymentType === 'ENROLLMENT' && period !== null) ||
         (paymentType === 'PENSION' &&
           (typeof period !== 'string' || !periodPattern.test(period)))
       )
         throw new BadRequestException('Invalid payment period');
-      periods = [period as string | null];
+      requested = [{
+        paymentType: paymentType as 'ENROLLMENT' | 'PENSION',
+        period: period as string | null,
+      }];
     }
     const reference = optionalText(input.reference, 200),
       notes = optionalText(input.notes, 1000);
@@ -497,12 +550,14 @@ export class PaymentsService {
           where: { id: enrollmentId },
           include: { academicCycle: true, payments: true, pensionObligations: { orderBy: { period: 'asc' } }, branch: true, group: { include: { reusableGroup: true } } },
         });
+        if (enrollment.academicCycle.status !== AcademicCycleStatus.ACTIVE)
+          throw new ConflictException('Academic cycle is not active');
         const charges = obligations(enrollment).filter(
-          (charge) =>
-            charge.paymentType === paymentType &&
-            periods.includes(charge.period),
+          (charge) => requested.some(
+            (item) => item.paymentType === charge.paymentType && item.period === charge.period,
+          ),
         );
-        if (charges.length !== periods.length)
+        if (charges.length !== requested.length)
           throw new BadRequestException('Payment obligation unavailable');
         if (charges.some((charge) => !charge.balance.greaterThan(0)))
           throw new ConflictException('Payment obligation unavailable');
@@ -512,7 +567,7 @@ export class PaymentsService {
         );
         if (amount.greaterThan(balance))
           throw new ConflictException('Payment exceeds remaining balance');
-        if (periods.length > 1 && !amount.equals(balance))
+        if (requested.length > 1 && !amount.equals(balance))
           throw new BadRequestException(
             'Multiple installments require full payment',
           );
@@ -530,9 +585,9 @@ export class PaymentsService {
             await tx.payment.create({
               data: {
                 enrollmentId,
-                paymentType,
+                paymentType: charge.paymentType,
                 period: charge.period,
-                amount: periods.length > 1 ? charge.balance : amount,
+                amount: requested.length > 1 ? charge.balance : amount,
                 paymentDate,
                 paymentMethod: input.paymentMethod as PaymentMethod,
                 reference,

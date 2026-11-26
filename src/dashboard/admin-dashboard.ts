@@ -27,9 +27,12 @@ export function aggregateAdminDashboard(
   today = institutionToday(),
 ) {
   let outstanding = zero();
+  let overdueBalance = zero();
   let enrollmentCollected = zero();
   let pensionCollected = zero();
   let studentsWithDebt = 0;
+  let pendingStudents = 0;
+  let overdueStudents = 0;
   const monthly = new Map<
     string,
     { enrollment: Prisma.Decimal; pension: Prisma.Decimal }
@@ -46,8 +49,14 @@ export function aggregateAdminDashboard(
       (sum, charge) => sum.plus(charge.balance),
       outstanding,
     );
-    if (!['PAID', null].includes(accountStatus(charges, today)))
+    overdueBalance = charges
+      .filter((charge) => charge.balance.greaterThan(0) && charge.dueDate !== null && charge.dueDate < today)
+      .reduce((sum, charge) => sum.plus(charge.balance), overdueBalance);
+    const status = accountStatus(charges, today);
+    if (!['PAID', null].includes(status))
       studentsWithDebt += 1;
+    if (status === 'PENDING') pendingStudents += 1;
+    if (status === 'OVERDUE') overdueStudents += 1;
 
     for (const payment of enrollment.payments) {
       if (payment.paymentType === PaymentType.ENROLLMENT)
@@ -78,8 +87,11 @@ export function aggregateAdminDashboard(
       enrolledStudents: cycle.enrollments.length,
       upToDateStudents: cycle.enrollments.length - studentsWithDebt,
       studentsWithDebt,
+      pendingStudents,
+      overdueStudents,
       totalCollected: collected.toFixed(2),
       outstandingBalance: outstanding.toFixed(2),
+      overdueBalance: overdueBalance.toFixed(2),
       enrollmentCollected: enrollmentCollected.toFixed(2),
       pensionCollected: pensionCollected.toFixed(2),
     },
@@ -92,4 +104,27 @@ export function aggregateAdminDashboard(
         total: values.enrollment.plus(values.pension).toFixed(2),
       })),
   };
+}
+
+export function overdueSummary(
+  enrollment: Parameters<typeof obligations>[0],
+  today = institutionToday(),
+) {
+  const charges = obligations(enrollment, today).filter(
+    (charge) =>
+      charge.balance.greaterThan(0) &&
+      charge.dueDate !== null &&
+      charge.dueDate < today,
+  );
+  return {
+    charges,
+    balance: charges.reduce(
+      (sum, charge) => sum.plus(charge.balance),
+      new Prisma.Decimal(0),
+    ),
+  };
+}
+
+export function paginate<T>(items: T[], page: number, pageSize = 20) {
+  return items.slice((page - 1) * pageSize, page * pageSize);
 }

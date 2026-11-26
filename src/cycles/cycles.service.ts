@@ -4,9 +4,10 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { AcademicCycleCategory, AcademicCycleStatus, PreuniversityDueRule, Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { cyclePeriods, institutionToday } from '../payments/obligations';
+import { preuniversitySchedule } from './preuniversity';
 
 function bodyObject(body: unknown): Record<string, unknown> {
   if (!body || typeof body !== 'object' || Array.isArray(body))
@@ -59,7 +60,7 @@ const enrollmentInclude = {
 export class CyclesService {
   constructor(private readonly prisma: PrismaService) {}
   branches(activeOnly = false) {
-    return this.prisma.branch.findMany({ where: activeOnly ? { isActive: true } : {}, include: { _count: { select: { groups: true, cycles: true } } }, orderBy: { name: 'asc' } });
+    return this.prisma.branch.findMany({ where: activeOnly ? { isActive: true } : {}, include: { _count: { select: { groups: true, cycles: true } } }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
   }
   async saveBranch(body: unknown, branchId?: number) {
     const input = bodyObject(body);
@@ -81,6 +82,27 @@ export class CyclesService {
       orderBy: { startDate: 'asc' },
     });
   }
+  async transition(cycleId: number, target: AcademicCycleStatus) {
+    if (target !== AcademicCycleStatus.ACTIVE && target !== AcademicCycleStatus.CLOSED)
+      throw new BadRequestException('Invalid cycle transition');
+    return this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<{ status: AcademicCycleStatus }[]>`
+        SELECT "status" FROM "AcademicCycle" WHERE "id" = ${cycleId} FOR UPDATE
+      `;
+      if (!rows.length) throw new NotFoundException();
+      const current = rows[0].status;
+      const valid =
+        (current === AcademicCycleStatus.UPCOMING && target === AcademicCycleStatus.ACTIVE) ||
+        (current === AcademicCycleStatus.ACTIVE && target === AcademicCycleStatus.CLOSED);
+      if (!valid)
+        throw new ConflictException(`Cannot transition cycle from ${current} to ${target}`);
+      return tx.academicCycle.update({
+        where: { id: cycleId },
+        data: { status: target },
+        include: cycleInclude,
+      });
+    });
+  }
   async detail(cycleId: number) {
     const cycle = await this.prisma.academicCycle.findUnique({
       where: { id: cycleId },
@@ -95,12 +117,11 @@ export class CyclesService {
     const endDate = date(input.endDate);
     if (endDate < startDate)
       throw new BadRequestException('Invalid date range');
-    const feeId = id(input.feeId);
-    if (
-      !(await this.prisma.academicCycle.findUnique({ where: { id: cycleId } }))
-    )
-      throw new NotFoundException();
-    if (!(await this.prisma.enrollmentFee.findUnique({ where: { id: feeId } })))
+    const cycle = await this.prisma.academicCycle.findUnique({ where: { id: cycleId } });
+    if (!cycle) throw new NotFoundException();
+    const school = cycle.category === AcademicCycleCategory.SCHOOL;
+    const feeId = school ? id(input.feeId) : null;
+    if (school && !(await this.prisma.enrollmentFee.findUnique({ where: { id: feeId! } })))
       throw new BadRequestException('Unknown enrollment fee');
     return this.prisma.academicCycle.update({
       where: { id: cycleId },
@@ -136,7 +157,12 @@ export class CyclesService {
       throw new BadRequestException('Invalid date range');
     if (!Array.isArray(input.groups) || !input.groups.length)
       throw new BadRequestException('Groups required');
-    const feeId = id(input.feeId);
+    const requestedCategory = input.category ?? AcademicCycleCategory.SCHOOL;
+    if (!Object.values(AcademicCycleCategory).includes(requestedCategory as AcademicCycleCategory))
+      throw new BadRequestException('Invalid cycle category');
+    const category = requestedCategory as AcademicCycleCategory;
+    const school = category === AcademicCycleCategory.SCHOOL;
+    const feeId = school ? id(input.feeId) : null;
     if (!Array.isArray(input.branchIds) || !input.branchIds.length)
       throw new BadRequestException('Branches required');
     const branchIds = input.branchIds.map(id);
@@ -152,7 +178,7 @@ export class CyclesService {
     try {
       return await this.prisma.$transaction(
         async (tx) => {
-          if (!(await tx.enrollmentFee.findUnique({ where: { id: feeId } })))
+          if (school && !(await tx.enrollmentFee.findUnique({ where: { id: feeId! } })))
             throw new BadRequestException('Unknown enrollment fee');
           if (await tx.branch.count({ where: { id: { in: branchIds }, isActive: true } }) !== branchIds.length)
             throw new BadRequestException('Unknown branch');
@@ -169,7 +195,11 @@ export class CyclesService {
             !(await tx.academicCycle.findUnique({ where: { id: cycleId } }))
           )
             throw new NotFoundException();
-          const data = { name: cycleName, startDate, endDate, feeId };
+          const existing = cycleId === undefined ? null : await tx.academicCycle.findUnique({ where: { id: cycleId } });
+          if (cycleId !== undefined && !existing) throw new NotFoundException();
+          if (existing && existing.category !== category)
+            throw new BadRequestException('Cycle category cannot be changed');
+          const data = { name: cycleName, startDate, endDate, category, feeId, preuniversityFee: null, preuniversityInstallments: null, preuniversityDueRule: null };
           const cycle =
             cycleId === undefined
               ? await tx.academicCycle.create({ data })
@@ -211,7 +241,8 @@ export class CyclesService {
             const pension = await tx.pension.findUniqueOrThrow({
               where: { id: row.pensionId },
             });
-            await tx.enrollment.updateMany({
+            if (school) {
+              await tx.enrollment.updateMany({
               where: { groupId: assignedGroup.id, pensionAmount: null },
               data: {
                 pensionName: pension.name,
@@ -222,7 +253,8 @@ export class CyclesService {
                 pensionStartDate: cycle.startDate,
                 pensionEndDate: cycle.endDate,
               },
-            });
+              });
+            }
           }
           return tx.academicCycle.findUniqueOrThrow({
             where: { id: cycle.id },
@@ -359,11 +391,11 @@ export class CyclesService {
   async addCycleGroup(cycleId: number, body: unknown) {
     const input = bodyObject(body);
     const groupId = id(input.groupId);
-    const pensionId = id(input.pensionId);
     try {
       return await this.prisma.$transaction(async (tx) => {
-        if (!(await tx.academicCycle.findUnique({ where: { id: cycleId } })))
-          throw new NotFoundException();
+        const cycle = await tx.academicCycle.findUnique({ where: { id: cycleId } });
+        if (!cycle) throw new NotFoundException();
+        const pensionId = id(input.pensionId);
         const reusableGroup = await tx.group.findUnique({ where: { id: groupId } });
         if (!reusableGroup)
           throw new BadRequestException('Unknown group');
@@ -493,6 +525,8 @@ export class CyclesService {
           include: { fee: true },
         });
         if (!cycle) throw new NotFoundException();
+        if (cycle.status !== AcademicCycleStatus.ACTIVE)
+          throw new ConflictException('Academic cycle is not active');
         const student = await tx.student.findUnique({
           where: { id: studentId },
           select: { isActive: true },
@@ -512,19 +546,20 @@ export class CyclesService {
         // Validity is a calendar date in the institution's timezone.
         const today = date(
           new Intl.DateTimeFormat('en-CA', {
-            timeZone: 'America/Guayaquil',
+            timeZone: 'America/Lima',
             year: 'numeric',
             month: '2-digit',
             day: '2-digit',
           }).format(new Date()),
         );
         if (
-          !fee ||
+          (cycle.category === AcademicCycleCategory.SCHOOL && !fee) ||
+          (fee && (
           fee.validFrom > today ||
-          (fee.validUntil && fee.validUntil < today)
+          (fee.validUntil && fee.validUntil < today)))
         )
           throw new BadRequestException('Fee unavailable for this group');
-        const baseAmount = fee.amount;
+        const baseAmount = fee?.amount ?? new Prisma.Decimal(0);
         if (
           discountPercent.greaterThan(100) ||
           pensionDiscountPercent.greaterThan(100)
@@ -541,32 +576,57 @@ export class CyclesService {
           .mul(pensionDiscountPercent)
           .div(100)
           .toDecimalPlaces(2);
+        const pensionAmount = pensionBaseAmount.minus(pensionDiscountAmount);
+        let preuniversityInstallments: number | null = null;
+        let preuniversityDueRule: PreuniversityDueRule | null = null;
+        if (cycle.category === AcademicCycleCategory.PREUNIVERSITY) {
+          preuniversityInstallments = id(input.preuniversityInstallments);
+          if (preuniversityInstallments > 3)
+            throw new BadRequestException('Invalid installment count');
+          preuniversityDueRule = input.preuniversityDueRule as PreuniversityDueRule;
+          if (!Object.values(PreuniversityDueRule).includes(preuniversityDueRule))
+            throw new BadRequestException('Invalid due rule');
+        }
+        const obligations = cycle.category === AcademicCycleCategory.SCHOOL
+          ? cyclePeriods(cycle.startDate, cycle.endDate).map((period) => {
+              const [year, month] = period.split('-').map(Number);
+              const day = Math.min(group.pension!.dueDay, new Date(Date.UTC(year, month, 0)).getUTCDate());
+              return { period, name: group.pension!.name, baseAmount: pensionBaseAmount, discountAmount: pensionDiscountAmount, amount: pensionAmount, dueDate: new Date(`${period}-${String(day).padStart(2, '0')}T00:00:00.000Z`) };
+            })
+          : (() => {
+              const baseSchedule = preuniversitySchedule(pensionBaseAmount, preuniversityInstallments!, preuniversityDueRule!, cycle.startDate);
+              const payableSchedule = preuniversitySchedule(pensionAmount, preuniversityInstallments!, preuniversityDueRule!, cycle.startDate);
+              return payableSchedule.map((installment, index) => ({
+                period: installment.period,
+                name: `Cuota ${installment.number} de ${preuniversityInstallments}`,
+                baseAmount: baseSchedule[index].amount,
+                discountAmount: baseSchedule[index].amount.minus(installment.amount),
+                amount: installment.amount,
+                dueDate: installment.dueDate,
+              }));
+            })();
         return tx.enrollment.create({
           data: {
             studentId,
             academicCycleId: cycleId,
             branchId,
             groupId,
-            feeId: fee.id,
+            feeId: fee?.id ?? null,
             baseAmount,
             discountPercent,
             discountAmount,
             discountReason,
             finalAmount: baseAmount.minus(discountAmount),
-            enrollmentFeeName: fee.name,
-            pensionName: group.pension?.name,
+            enrollmentFeeName: fee?.name ?? null,
+            pensionName: group.pension.name,
             pensionStartDate: cycle.startDate,
             pensionEndDate: cycle.endDate,
             pensionBaseAmount,
             pensionDiscountPercent,
             pensionDiscountAmount,
-            pensionAmount: pensionBaseAmount.minus(pensionDiscountAmount),
-            pensionDueDay: group.pension.dueDay,
-            pensionObligations: { create: cyclePeriods(cycle.startDate, cycle.endDate).map((period) => {
-              const [year, month] = period.split('-').map(Number);
-              const day = Math.min(group.pension!.dueDay, new Date(Date.UTC(year, month, 0)).getUTCDate());
-              return { period, name: group.pension!.name, baseAmount: pensionBaseAmount, discountAmount: pensionDiscountAmount, amount: pensionBaseAmount.minus(pensionDiscountAmount), dueDate: new Date(`${period}-${String(day).padStart(2, '0')}T00:00:00.000Z`) };
-            }) },
+            pensionAmount,
+            pensionDueDay: cycle.category === AcademicCycleCategory.SCHOOL ? group.pension!.dueDay : null,
+            pensionObligations: { create: obligations },
           },
           include: enrollmentInclude,
         });

@@ -492,4 +492,63 @@ describe('Enrollment payments (PostgreSQL)', () => {
       ]),
     );
   });
+  it('registers a module and multiple pension installments together', async () => {
+    const user = await prisma.user.create({
+      data: {
+        username: `${prefix}-mixed`, fullName: 'Mixed payment student',
+        role: 'STUDENT', passwordHash: await hashPassword('test2026'),
+      },
+    });
+    const studentRecord = await prisma.student.create({
+      data: {
+        userId: user.id, fullName: 'Mixed payment student', initials: 'MP',
+        dni: `${prefix}-mixed`, firstName: 'Mixed', lastName: 'Student',
+        birthDate: new Date('2010-01-01'), gender: 'OTHER',
+        representativeName: 'Representative', relationship: 'OTHER',
+        relationshipOther: 'Other', primaryPhone: '0000000000',
+      },
+    });
+    const group = await prisma.cycleGroup.findFirstOrThrow({
+      where: { academicCycleId: cycleId },
+    });
+    const fee = await prisma.enrollmentFee.findFirstOrThrow({
+      where: { cycleGroups: { some: { id: group.id } } },
+    });
+    const mixedEnrollment = await prisma.enrollment.create({
+      data: {
+        studentId: studentRecord.id, academicCycleId: cycleId,
+        groupId: group.id, feeId: fee.id, baseAmount: 600,
+        discountAmount: 0, finalAmount: 600, pensionAmount: 400,
+        pensionDueDay: 10, pensionStartDate: new Date('2026-09-01'),
+        pensionEndDate: new Date('2026-10-31'),
+      },
+    });
+    const mixed = await post({
+      ...payment,
+      amount: '1400.00',
+      obligations: [
+        { paymentType: 'ENROLLMENT', period: null },
+        { paymentType: 'PENSION', period: '2026-09' },
+        { paymentType: 'PENSION', period: '2026-10' },
+      ],
+    }, admin, mixedEnrollment.id).expect(201);
+    expect(mixed.body as unknown).toEqual(expect.objectContaining({
+      totalAmount: '1400',
+      obligationCount: 3,
+      payments: expect.arrayContaining([
+        expect.objectContaining({ paymentType: 'ENROLLMENT', period: null, amount: '600' }),
+        expect.objectContaining({ paymentType: 'PENSION', period: '2026-09', amount: '400' }),
+        expect.objectContaining({ paymentType: 'PENSION', period: '2026-10', amount: '400' }),
+      ]),
+    }));
+    await post({
+      ...payment,
+      amount: '1400.00',
+      obligations: [
+        { paymentType: 'ENROLLMENT', period: null },
+        { paymentType: 'PENSION', period: '2026-09' },
+        { paymentType: 'PENSION', period: '2026-10' },
+      ],
+    }, admin, mixedEnrollment.id).expect(409);
+  });
 });

@@ -4,6 +4,7 @@ import {
   cyclePeriods,
   obligations,
   paymentStatus,
+  paymentPendingDays,
 } from './obligations';
 
 const decimal = (value: string | number) => new Prisma.Decimal(value);
@@ -106,7 +107,35 @@ describe('Payment obligations', () => {
       'PAID',
     );
     expect(accountStatus(obligations(data, '2024-03-01'), '2024-03-01')).toBe(
-      'PENDING',
+      'OVERDUE',
     );
+  });
+  it('validates the configurable pending warning period', () => {
+    expect(paymentPendingDays(undefined)).toBe(7);
+    expect(paymentPendingDays('0')).toBe(0);
+    expect(paymentPendingDays('12')).toBe(12);
+    for (const invalid of ['-1', '1.5', 'abc', ' 7'])
+      expect(() => paymentPendingDays(invalid)).toThrow(
+        'PAYMENT_PENDING_DAYS must be a non-negative integer',
+      );
+  });
+  it('applies inclusive warning boundaries only to unpaid installments', () => {
+    const charge = (dueDate: string, balance = 50, amountPaid = 0) => ({
+      paymentType: 'PENSION' as const,
+      period: dueDate.slice(0, 7),
+      dueDate,
+      amountDue: decimal(50),
+      originalAmount: decimal(50),
+      discountAmount: decimal(0),
+      amountPaid: decimal(amountPaid),
+      balance: decimal(balance),
+      status: balance === 0 ? 'PAID' : 'PENDING',
+    });
+    expect(accountStatus([charge('2027-01-17')], '2027-01-10', 7)).toBe('PENDING');
+    expect(accountStatus([charge('2027-01-18')], '2027-01-10', 7)).toBe('PAID');
+    expect(accountStatus([charge('2027-01-10')], '2027-01-10', 7)).toBe('PENDING');
+    expect(accountStatus([charge('2027-01-09')], '2027-01-10', 7)).toBe('OVERDUE');
+    expect(accountStatus([charge('2027-01-09', 0, 50)], '2027-01-10', 7)).toBe('PAID');
+    expect(accountStatus([charge('2027-01-11')], '2027-01-10', 0)).toBe('PAID');
   });
 });

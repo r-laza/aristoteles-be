@@ -67,7 +67,7 @@ All cycle and catalog endpoints require `ADMIN`:
 
 `Group` and `EnrollmentFee` are independent reusable catalogs. `CycleGroup` relates a group to a cycle; its fee relationship stores exactly one selected matrícula for each group and cycle when creating or editing. The API retains the `feeIds` array format but rejects arrays whose length is not one. Assigning catalogs never copies their records. Cycle edits preserve existing assignment IDs. Groups with enrolled students cannot be removed (HTTP 409); the assigned fee can be replaced while historical enrollments retain their fee reference and stored amounts.
 
-Enrollment validates the selected group's cycle and fee assignment, copies the fee amount, and computes the final amount with Decimal on the server. Fee validity includes both endpoints using Ecuador's calendar date (`America/Guayaquil`). Database constraints prevent duplicate group/cycle and student/cycle relationships and inconsistent stored amounts.
+Enrollment validates the selected group's cycle and fee assignment, copies the fee amount, and computes the final amount with Decimal on the server. Fee validity includes both endpoints using the academy's calendar date (`America/Lima`). Database constraints prevent duplicate group/cycle and student/cycle relationships and inconsistent stored amounts.
 
 Migration `20260916000000_reusable_fees` moves existing fee assignments into the join table without changing fee IDs, enrollment amounts, or payments. Existing fees are retained individually, since matching names or prices do not establish that they are the same business entity.
 

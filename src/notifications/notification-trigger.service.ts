@@ -6,7 +6,7 @@ import { PaymentReminderService } from './payment-reminder.service';
 export class NotificationTriggerService {
   constructor(private readonly reminders: PaymentReminderService) {}
 
-  @Cron('0 9 * * *', { timeZone: 'America/Guayaquil' })
+  @Cron('0 9 * * *', { timeZone: 'America/Lima' })
   runDaily() {
     return this.reminders.processAutomatic();
   }
