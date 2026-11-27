@@ -65,7 +65,11 @@ export function accountStatus(
   )
     return 'OVERDUE';
   const warningThrough = calendarDatePlusDays(today, warningDays);
-  if (pending.some((charge) => charge.dueDate === null || charge.dueDate <= warningThrough))
+  if (
+    pending.some(
+      (charge) => charge.dueDate === null || charge.dueDate <= warningThrough,
+    )
+  )
     return 'PENDING';
   return 'PAID';
 }
@@ -119,13 +123,18 @@ export function obligations(
   if (enrollment.pensionObligations?.length) {
     for (const obligation of enrollment.pensionObligations) {
       definitions.push({
-        paymentType: 'PENSION', period: obligation.period,
-        amount: obligation.amount, originalAmount: obligation.baseAmount,
+        paymentType: 'PENSION',
+        period: obligation.period,
+        amount: obligation.amount,
+        originalAmount: obligation.baseAmount,
         discountAmount: obligation.discountAmount,
         dueDate: obligation.dueDate.toISOString().slice(0, 10),
       });
     }
-  } else if (enrollment.pensionAmount !== null && enrollment.pensionDueDay !== null) {
+  } else if (
+    enrollment.pensionAmount !== null &&
+    enrollment.pensionDueDay !== null
+  ) {
     for (const period of cyclePeriods(
       enrollment.pensionStartDate ?? enrollment.academicCycle.startDate,
       enrollment.pensionEndDate ?? enrollment.academicCycle.endDate,

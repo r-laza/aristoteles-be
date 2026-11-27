@@ -1,4 +1,9 @@
-import { PaymentType, Prisma } from '@prisma/client';
+import {
+  AcademicCycleCategory,
+  PaymentMethod,
+  PaymentType,
+  Prisma,
+} from '@prisma/client';
 import {
   accountStatus,
   cyclePeriods,
@@ -6,8 +11,16 @@ import {
   obligations,
 } from '../payments/obligations';
 
-type DashboardEnrollment = Parameters<typeof obligations>[0] & {
+type DashboardEnrollment = Omit<
+  Parameters<typeof obligations>[0],
+  'payments'
+> & {
+  id: number;
+  studentId: number;
+  group: { reusableGroup: { id: number; name: string } };
   payments: (Parameters<typeof obligations>[0]['payments'][number] & {
+    id: number;
+    paymentMethod: PaymentMethod;
     paymentDate: Date;
   })[];
 };
@@ -15,6 +28,7 @@ type DashboardEnrollment = Parameters<typeof obligations>[0] & {
 export type ActiveCycleDashboardInput = {
   id: number;
   name: string;
+  category: AcademicCycleCategory;
   startDate: Date;
   endDate: Date;
   enrollments: DashboardEnrollment[];
@@ -33,6 +47,22 @@ export function aggregateAdminDashboard(
   let studentsWithDebt = 0;
   let pendingStudents = 0;
   let overdueStudents = 0;
+  const uniqueEnrollments = [
+    ...new Map(
+      cycle.enrollments.map((enrollment) => [enrollment.id, enrollment]),
+    ).values(),
+  ];
+  const groups = new Map<
+    number,
+    { id: number; name: string; students: Set<number> }
+  >();
+  const methods = new Map<PaymentMethod, Prisma.Decimal>([
+    [PaymentMethod.CASH, zero()],
+    [PaymentMethod.TRANSFER, zero()],
+    [PaymentMethod.YAPE, zero()],
+    [PaymentMethod.PLIN, zero()],
+  ]);
+  let unrepresentedCollected = zero();
   const monthly = new Map<
     string,
     { enrollment: Prisma.Decimal; pension: Prisma.Decimal }
@@ -43,22 +73,48 @@ export function aggregateAdminDashboard(
     ]),
   );
 
-  for (const enrollment of cycle.enrollments) {
+  for (const source of uniqueEnrollments) {
+    const enrollment = {
+      ...source,
+      payments: [
+        ...new Map(
+          source.payments.map((payment) => [payment.id, payment]),
+        ).values(),
+      ],
+    };
+    const group = enrollment.group.reusableGroup;
+    const distribution = groups.get(group.id) ?? {
+      ...group,
+      students: new Set<number>(),
+    };
+    distribution.students.add(enrollment.studentId);
+    groups.set(group.id, distribution);
     const charges = obligations(enrollment, today);
     outstanding = charges.reduce(
       (sum, charge) => sum.plus(charge.balance),
       outstanding,
     );
     overdueBalance = charges
-      .filter((charge) => charge.balance.greaterThan(0) && charge.dueDate !== null && charge.dueDate < today)
+      .filter(
+        (charge) =>
+          charge.balance.greaterThan(0) &&
+          charge.dueDate !== null &&
+          charge.dueDate < today,
+      )
       .reduce((sum, charge) => sum.plus(charge.balance), overdueBalance);
     const status = accountStatus(charges, today);
-    if (!['PAID', null].includes(status))
-      studentsWithDebt += 1;
+    if (!['PAID', null].includes(status)) studentsWithDebt += 1;
     if (status === 'PENDING') pendingStudents += 1;
     if (status === 'OVERDUE') overdueStudents += 1;
 
     for (const payment of enrollment.payments) {
+      const methodCollected = methods.get(payment.paymentMethod);
+      if (methodCollected !== undefined)
+        methods.set(
+          payment.paymentMethod,
+          methodCollected.plus(payment.amount),
+        );
+      else unrepresentedCollected = unrepresentedCollected.plus(payment.amount);
       if (payment.paymentType === PaymentType.ENROLLMENT)
         enrollmentCollected = enrollmentCollected.plus(payment.amount);
       else pensionCollected = pensionCollected.plus(payment.amount);
@@ -76,6 +132,15 @@ export function aggregateAdminDashboard(
   }
 
   const collected = enrollmentCollected.plus(pensionCollected);
+  const enrolledStudents = new Set(
+    uniqueEnrollments.map((enrollment) => enrollment.studentId),
+  ).size;
+  const groupDistribution = [...groups.values()]
+    .sort(
+      (left, right) =>
+        left.name.localeCompare(right.name, 'es') || left.id - right.id,
+    )
+    .map(({ id, name, students }) => ({ id, name, count: students.size }));
   return {
     activeCycle: {
       id: cycle.id,
@@ -84,8 +149,14 @@ export function aggregateAdminDashboard(
       endDate: cycle.endDate.toISOString().slice(0, 10),
     },
     summary: {
-      enrolledStudents: cycle.enrollments.length,
-      upToDateStudents: cycle.enrollments.length - studentsWithDebt,
+      enrolledStudents,
+      schoolEnrollments:
+        cycle.category === AcademicCycleCategory.SCHOOL ? enrolledStudents : 0,
+      preuniversityEnrollments:
+        cycle.category === AcademicCycleCategory.PREUNIVERSITY
+          ? enrolledStudents
+          : 0,
+      upToDateStudents: enrolledStudents - studentsWithDebt,
       studentsWithDebt,
       pendingStudents,
       overdueStudents,
@@ -95,6 +166,21 @@ export function aggregateAdminDashboard(
       enrollmentCollected: enrollmentCollected.toFixed(2),
       pensionCollected: pensionCollected.toFixed(2),
     },
+    enrollmentDistribution: {
+      school:
+        cycle.category === AcademicCycleCategory.SCHOOL
+          ? groupDistribution
+          : [],
+      preuniversity:
+        cycle.category === AcademicCycleCategory.PREUNIVERSITY
+          ? groupDistribution
+          : [],
+    },
+    paymentMethods: [...methods].map(([method, total]) => ({
+      method,
+      amount: total.toFixed(2),
+    })),
+    unrepresentedCollected: unrepresentedCollected.toFixed(2),
     monthlyCollected: [...monthly.entries()]
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([period, values]) => ({

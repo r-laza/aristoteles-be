@@ -124,9 +124,7 @@ class S3StorageProvider implements StorageProvider {
 
   async get(key: string) {
     const result = await this.execute('GetObject', key, () =>
-      this.client.send(
-        new GetObjectCommand({ Bucket: this.bucket, Key: key }),
-      ),
+      this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key })),
     );
     if (!result.Body) throw new Error('Stored object has no body');
     return {

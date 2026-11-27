@@ -27,11 +27,41 @@ export class CyclesController {
   @Get(':id/groups') groups(@Param('id', ParseIntPipe) id: number) {
     return this.cycles.groups(id);
   }
+  @Get(':id/branches/:branchId/groups') branchGroups(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('branchId', ParseIntPipe) branchId: number,
+  ) {
+    return this.cycles.groups(id, branchId);
+  }
+  @Get(':id/branches/:branchId/available-groups') availableGroups(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('branchId', ParseIntPipe) branchId: number,
+  ) {
+    return this.cycles.availableGroups(id, branchId);
+  }
   @Post(':id/groups') addGroup(
     @Param('id', ParseIntPipe) id: number,
     @Body() body: unknown,
   ) {
     return this.cycles.addCycleGroup(id, body);
+  }
+  @Post(':id/branches') addBranch(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: unknown,
+  ) {
+    return this.cycles.addCycleBranch(id, body);
+  }
+  @Post(':id/branches/configure') configureBranch(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: unknown,
+  ) {
+    return this.cycles.configureCycleBranch(id, body);
+  }
+  @Post(':id/branches/:branchId/delete') deleteBranch(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('branchId', ParseIntPipe) branchId: number,
+  ) {
+    return this.cycles.deleteCycleBranch(id, branchId);
   }
   @Post(':id/groups/:groupId/delete') deleteGroup(
     @Param('id', ParseIntPipe) id: number,
@@ -77,15 +107,26 @@ export class CyclesController {
   @Post('enrollments/:enrollmentId/transfer') transfer(
     @Param('enrollmentId', ParseIntPipe) enrollmentId: number,
     @Body() body: unknown,
-  ) { return this.cycles.transfer(enrollmentId, body); }
+  ) {
+    return this.cycles.transfer(enrollmentId, body);
+  }
 }
 @Controller('admin/branches')
 @Roles('ADMIN')
 export class BranchesController {
   constructor(private readonly cycles: CyclesService) {}
-  @Get() list() { return this.cycles.branches(); }
-  @Post() create(@Body() body: unknown) { return this.cycles.saveBranch(body); }
-  @Post(':id') edit(@Param('id', ParseIntPipe) id: number, @Body() body: unknown) { return this.cycles.saveBranch(body, id); }
+  @Get() list() {
+    return this.cycles.branches();
+  }
+  @Post() create(@Body() body: unknown) {
+    return this.cycles.saveBranch(body);
+  }
+  @Post(':id') edit(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: unknown,
+  ) {
+    return this.cycles.saveBranch(body, id);
+  }
 }
 @Controller('admin/groups')
 @Roles('ADMIN')

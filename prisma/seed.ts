@@ -12,6 +12,7 @@ async function main() {
       passwordHash: await hashPassword('admin2026'),
       fullName: 'Administrador',
       role: 'ADMIN',
+      adminLevel: 'MAIN',
       isActive: true,
     },
   });

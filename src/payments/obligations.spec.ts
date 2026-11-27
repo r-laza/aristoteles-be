@@ -131,11 +131,19 @@ describe('Payment obligations', () => {
       balance: decimal(balance),
       status: balance === 0 ? 'PAID' : 'PENDING',
     });
-    expect(accountStatus([charge('2027-01-17')], '2027-01-10', 7)).toBe('PENDING');
+    expect(accountStatus([charge('2027-01-17')], '2027-01-10', 7)).toBe(
+      'PENDING',
+    );
     expect(accountStatus([charge('2027-01-18')], '2027-01-10', 7)).toBe('PAID');
-    expect(accountStatus([charge('2027-01-10')], '2027-01-10', 7)).toBe('PENDING');
-    expect(accountStatus([charge('2027-01-09')], '2027-01-10', 7)).toBe('OVERDUE');
-    expect(accountStatus([charge('2027-01-09', 0, 50)], '2027-01-10', 7)).toBe('PAID');
+    expect(accountStatus([charge('2027-01-10')], '2027-01-10', 7)).toBe(
+      'PENDING',
+    );
+    expect(accountStatus([charge('2027-01-09')], '2027-01-10', 7)).toBe(
+      'OVERDUE',
+    );
+    expect(accountStatus([charge('2027-01-09', 0, 50)], '2027-01-10', 7)).toBe(
+      'PAID',
+    );
     expect(accountStatus([charge('2027-01-11')], '2027-01-10', 0)).toBe('PAID');
   });
 });

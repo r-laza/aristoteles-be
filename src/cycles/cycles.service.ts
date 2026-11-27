@@ -4,7 +4,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { AcademicCycleCategory, AcademicCycleStatus, PreuniversityDueRule, Prisma } from '@prisma/client';
+import {
+  AcademicCycleCategory,
+  AcademicCycleStatus,
+  PreuniversityDueRule,
+  Prisma,
+} from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { cyclePeriods, institutionToday } from '../payments/obligations';
 import { preuniversitySchedule } from './preuniversity';
@@ -52,15 +57,37 @@ const enrollmentInclude = {
   student: { select: { id: true, fullName: true, dni: true } },
   group: { include: { reusableGroup: true } },
   branch: true,
-  transfers: { include: { previousBranch: true, newBranch: true, previousGroup: { include: { reusableGroup: true } }, newGroup: { include: { reusableGroup: true } } }, orderBy: { transferDate: 'asc' as const } },
+  transfers: {
+    include: {
+      previousBranch: true,
+      newBranch: true,
+      previousGroup: { include: { reusableGroup: true } },
+      newGroup: { include: { reusableGroup: true } },
+    },
+    orderBy: { transferDate: 'asc' as const },
+  },
   fee: true,
 } as const;
 
 @Injectable()
 export class CyclesService {
   constructor(private readonly prisma: PrismaService) {}
-  branches(activeOnly = false) {
-    return this.prisma.branch.findMany({ where: activeOnly ? { isActive: true } : {}, include: { _count: { select: { groups: true, cycles: true } } }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
+  async branches(activeOnly = false) {
+    const branches = await this.prisma.branch.findMany({
+      where: activeOnly ? { isActive: true } : {},
+      include: {
+        cycleGroups: { select: { reusableGroupId: true } },
+        _count: { select: { cycles: true } },
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    return branches.map(({ cycleGroups, _count, ...branch }) => ({
+      ...branch,
+      _count: {
+        cycles: _count.cycles,
+        groups: new Set(cycleGroups.map((group) => group.reusableGroupId)).size,
+      },
+    }));
   }
   async saveBranch(body: unknown, branchId?: number) {
     const input = bodyObject(body);
@@ -71,10 +98,14 @@ export class CyclesService {
       isActive: typeof input.isActive === 'boolean' ? input.isActive : true,
     };
     try {
-      if (branchId === undefined) return await this.prisma.branch.create({ data });
-      if (!(await this.prisma.branch.findUnique({ where: { id: branchId } }))) throw new NotFoundException();
+      if (branchId === undefined)
+        return await this.prisma.branch.create({ data });
+      if (!(await this.prisma.branch.findUnique({ where: { id: branchId } })))
+        throw new NotFoundException();
       return await this.prisma.branch.update({ where: { id: branchId }, data });
-    } catch (error) { this.rethrowConflict(error); }
+    } catch (error) {
+      this.rethrowConflict(error);
+    }
   }
   list() {
     return this.prisma.academicCycle.findMany({
@@ -83,7 +114,10 @@ export class CyclesService {
     });
   }
   async transition(cycleId: number, target: AcademicCycleStatus) {
-    if (target !== AcademicCycleStatus.ACTIVE && target !== AcademicCycleStatus.CLOSED)
+    if (
+      target !== AcademicCycleStatus.ACTIVE &&
+      target !== AcademicCycleStatus.CLOSED
+    )
       throw new BadRequestException('Invalid cycle transition');
     return this.prisma.$transaction(async (tx) => {
       const rows = await tx.$queryRaw<{ status: AcademicCycleStatus }[]>`
@@ -92,10 +126,14 @@ export class CyclesService {
       if (!rows.length) throw new NotFoundException();
       const current = rows[0].status;
       const valid =
-        (current === AcademicCycleStatus.UPCOMING && target === AcademicCycleStatus.ACTIVE) ||
-        (current === AcademicCycleStatus.ACTIVE && target === AcademicCycleStatus.CLOSED);
+        (current === AcademicCycleStatus.UPCOMING &&
+          target === AcademicCycleStatus.ACTIVE) ||
+        (current === AcademicCycleStatus.ACTIVE &&
+          target === AcademicCycleStatus.CLOSED);
       if (!valid)
-        throw new ConflictException(`Cannot transition cycle from ${current} to ${target}`);
+        throw new ConflictException(
+          `Cannot transition cycle from ${current} to ${target}`,
+        );
       return tx.academicCycle.update({
         where: { id: cycleId },
         data: { status: target },
@@ -117,11 +155,16 @@ export class CyclesService {
     const endDate = date(input.endDate);
     if (endDate < startDate)
       throw new BadRequestException('Invalid date range');
-    const cycle = await this.prisma.academicCycle.findUnique({ where: { id: cycleId } });
+    const cycle = await this.prisma.academicCycle.findUnique({
+      where: { id: cycleId },
+    });
     if (!cycle) throw new NotFoundException();
     const school = cycle.category === AcademicCycleCategory.SCHOOL;
     const feeId = school ? id(input.feeId) : null;
-    if (school && !(await this.prisma.enrollmentFee.findUnique({ where: { id: feeId! } })))
+    if (
+      school &&
+      !(await this.prisma.enrollmentFee.findUnique({ where: { id: feeId! } }))
+    )
       throw new BadRequestException('Unknown enrollment fee');
     return this.prisma.academicCycle.update({
       where: { id: cycleId },
@@ -158,7 +201,11 @@ export class CyclesService {
     if (!Array.isArray(input.groups) || !input.groups.length)
       throw new BadRequestException('Groups required');
     const requestedCategory = input.category ?? AcademicCycleCategory.SCHOOL;
-    if (!Object.values(AcademicCycleCategory).includes(requestedCategory as AcademicCycleCategory))
+    if (
+      !Object.values(AcademicCycleCategory).includes(
+        requestedCategory as AcademicCycleCategory,
+      )
+    )
       throw new BadRequestException('Invalid cycle category');
     const category = requestedCategory as AcademicCycleCategory;
     const school = category === AcademicCycleCategory.SCHOOL;
@@ -166,26 +213,42 @@ export class CyclesService {
     if (!Array.isArray(input.branchIds) || !input.branchIds.length)
       throw new BadRequestException('Branches required');
     const branchIds = input.branchIds.map(id);
-    if (new Set(branchIds).size !== branchIds.length) throw new BadRequestException();
+    if (new Set(branchIds).size !== branchIds.length)
+      throw new BadRequestException();
     const assignments = input.groups.map((value: unknown) => {
       const row = bodyObject(value);
-      return { groupId: id(row.groupId), pensionId: id(row.pensionId) };
+      return {
+        branchId: id(row.branchId),
+        groupId: id(row.groupId),
+        pensionId: id(row.pensionId),
+      };
     });
     if (
-      new Set(assignments.map((row) => row.groupId)).size !== assignments.length
+      new Set(assignments.map((row) => `${row.branchId}:${row.groupId}`))
+        .size !== assignments.length
     )
       throw new BadRequestException();
     try {
       return await this.prisma.$transaction(
         async (tx) => {
-          if (school && !(await tx.enrollmentFee.findUnique({ where: { id: feeId! } })))
+          if (
+            school &&
+            !(await tx.enrollmentFee.findUnique({ where: { id: feeId! } }))
+          )
             throw new BadRequestException('Unknown enrollment fee');
-          if (await tx.branch.count({ where: { id: { in: branchIds }, isActive: true } }) !== branchIds.length)
+          if (
+            (await tx.branch.count({
+              where: { id: { in: branchIds }, isActive: true },
+            })) !== branchIds.length
+          )
             throw new BadRequestException('Unknown branch');
           for (const row of assignments) {
-            const reusableGroup = await tx.group.findUnique({ where: { id: row.groupId } });
+            const reusableGroup = await tx.group.findUnique({
+              where: { id: row.groupId },
+            });
             if (
-              !reusableGroup || !branchIds.includes(reusableGroup.branchId) ||
+              !reusableGroup ||
+              !branchIds.includes(row.branchId) ||
               !(await tx.pension.findUnique({ where: { id: row.pensionId } }))
             )
               throw new BadRequestException('Unknown group or fee');
@@ -195,29 +258,68 @@ export class CyclesService {
             !(await tx.academicCycle.findUnique({ where: { id: cycleId } }))
           )
             throw new NotFoundException();
-          const existing = cycleId === undefined ? null : await tx.academicCycle.findUnique({ where: { id: cycleId } });
+          const existing =
+            cycleId === undefined
+              ? null
+              : await tx.academicCycle.findUnique({ where: { id: cycleId } });
           if (cycleId !== undefined && !existing) throw new NotFoundException();
           if (existing && existing.category !== category)
             throw new BadRequestException('Cycle category cannot be changed');
-          const data = { name: cycleName, startDate, endDate, category, feeId, preuniversityFee: null, preuniversityInstallments: null, preuniversityDueRule: null };
+          const data = {
+            name: cycleName,
+            startDate,
+            endDate,
+            category,
+            feeId,
+            preuniversityFee: null,
+            preuniversityInstallments: null,
+            preuniversityDueRule: null,
+          };
           const cycle =
             cycleId === undefined
               ? await tx.academicCycle.create({ data })
               : await tx.academicCycle.update({ where: { id: cycleId }, data });
-          if (cycleId !== undefined && await tx.enrollment.count({ where: { academicCycleId: cycle.id, branchId: { notIn: branchIds } } }))
+          if (
+            cycleId !== undefined &&
+            (await tx.enrollment.count({
+              where: {
+                academicCycleId: cycle.id,
+                branchId: { notIn: branchIds },
+              },
+            }))
+          )
             throw new ConflictException('Branch has enrolled students');
-          await tx.academicCycleBranch.deleteMany({ where: { academicCycleId: cycle.id, branchId: { notIn: branchIds } } });
-          await Promise.all(branchIds.map((branchId) => tx.academicCycleBranch.upsert({
-            where: { academicCycleId_branchId: { academicCycleId: cycle.id, branchId } },
-            create: { academicCycleId: cycle.id, branchId }, update: {},
-          })));
-          const removed = await tx.cycleGroup.findMany({
+          await tx.academicCycleBranch.deleteMany({
             where: {
               academicCycleId: cycle.id,
-              reusableGroupId: { notIn: assignments.map((row) => row.groupId) },
+              branchId: { notIn: branchIds },
             },
+          });
+          await Promise.all(
+            branchIds.map((branchId) =>
+              tx.academicCycleBranch.upsert({
+                where: {
+                  academicCycleId_branchId: {
+                    academicCycleId: cycle.id,
+                    branchId,
+                  },
+                },
+                create: { academicCycleId: cycle.id, branchId },
+                update: {},
+              }),
+            ),
+          );
+          const currentGroups = await tx.cycleGroup.findMany({
+            where: { academicCycleId: cycle.id },
             include: { _count: { select: { enrollments: true } } },
           });
+          const assignmentKeys = new Set(
+            assignments.map((row) => `${row.branchId}:${row.groupId}`),
+          );
+          const removed = currentGroups.filter(
+            (group) =>
+              !assignmentKeys.has(`${group.branchId}:${group.reusableGroupId}`),
+          );
           if (removed.some((group) => group._count.enrollments > 0))
             throw new ConflictException('Group has enrolled students');
           await tx.cycleGroup.deleteMany({
@@ -226,13 +328,15 @@ export class CyclesService {
           for (const row of assignments) {
             const assignedGroup = await tx.cycleGroup.upsert({
               where: {
-                academicCycleId_reusableGroupId: {
+                academicCycleId_branchId_reusableGroupId: {
                   academicCycleId: cycle.id,
+                  branchId: row.branchId,
                   reusableGroupId: row.groupId,
                 },
               },
               create: {
                 academicCycleId: cycle.id,
+                branchId: row.branchId,
                 reusableGroupId: row.groupId,
                 pensionId: row.pensionId,
               },
@@ -243,16 +347,16 @@ export class CyclesService {
             });
             if (school) {
               await tx.enrollment.updateMany({
-              where: { groupId: assignedGroup.id, pensionAmount: null },
-              data: {
-                pensionName: pension.name,
-                pensionBaseAmount: pension.amount,
-                pensionDiscountAmount: 0,
-                pensionAmount: pension.amount,
-                pensionDueDay: pension.dueDay,
-                pensionStartDate: cycle.startDate,
-                pensionEndDate: cycle.endDate,
-              },
+                where: { groupId: assignedGroup.id, pensionAmount: null },
+                data: {
+                  pensionName: pension.name,
+                  pensionBaseAmount: pension.amount,
+                  pensionDiscountAmount: 0,
+                  pensionAmount: pension.amount,
+                  pensionDueDay: pension.dueDay,
+                  pensionStartDate: cycle.startDate,
+                  pensionEndDate: cycle.endDate,
+                },
               });
             }
           }
@@ -371,12 +475,25 @@ export class CyclesService {
       throw new NotFoundException();
     return this.prisma.enrollmentFee.update({ where: { id: feeId }, data });
   }
-  async groups(cycleId: number) {
+  async groups(cycleId: number, branchId?: number) {
     const cycle = await this.detail(cycleId);
+    if (
+      branchId !== undefined &&
+      !(await this.prisma.academicCycleBranch.findUnique({
+        where: {
+          academicCycleId_branchId: { academicCycleId: cycleId, branchId },
+        },
+      }))
+    )
+      throw new NotFoundException('Branch not assigned to cycle');
     const groups = await this.prisma.cycleGroup.findMany({
-      where: { academicCycleId: cycleId },
+      where: {
+        academicCycleId: cycleId,
+        ...(branchId === undefined ? {} : { branchId }),
+      },
       include: {
-        reusableGroup: { include: { branch: true } },
+        reusableGroup: true,
+        branch: true,
         pension: true,
         _count: { select: { enrollments: true } },
       },
@@ -388,30 +505,263 @@ export class CyclesService {
       fees: cycle.fee ? [cycle.fee] : [],
     }));
   }
+  async availableGroups(cycleId: number, branchId: number) {
+    if (
+      !(await this.prisma.academicCycleBranch.findUnique({
+        where: {
+          academicCycleId_branchId: { academicCycleId: cycleId, branchId },
+        },
+      }))
+    )
+      throw new NotFoundException('Branch not assigned to cycle');
+    return this.prisma.group.findMany({
+      where: {
+        cycles: { none: { academicCycleId: cycleId, branchId } },
+      },
+      include: { _count: { select: { cycles: true } } },
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
+    });
+  }
   async addCycleGroup(cycleId: number, body: unknown) {
     const input = bodyObject(body);
     const groupId = id(input.groupId);
+    const branchId = id(input.branchId);
     try {
       return await this.prisma.$transaction(async (tx) => {
-        const cycle = await tx.academicCycle.findUnique({ where: { id: cycleId } });
+        const cycle = await tx.academicCycle.findUnique({
+          where: { id: cycleId },
+        });
         if (!cycle) throw new NotFoundException();
         const pensionId = id(input.pensionId);
-        const reusableGroup = await tx.group.findUnique({ where: { id: groupId } });
-        if (!reusableGroup)
-          throw new BadRequestException('Unknown group');
-        if (!(await tx.academicCycleBranch.findUnique({ where: { academicCycleId_branchId: { academicCycleId: cycleId, branchId: reusableGroup.branchId } } })))
+        const reusableGroup = await tx.group.findUnique({
+          where: { id: groupId },
+        });
+        if (!reusableGroup) throw new BadRequestException('Unknown group');
+        if (
+          !(await tx.academicCycleBranch.findUnique({
+            where: {
+              academicCycleId_branchId: { academicCycleId: cycleId, branchId },
+            },
+          }))
+        )
           throw new BadRequestException('Branch unavailable for cycle');
         if (!(await tx.pension.findUnique({ where: { id: pensionId } })))
           throw new BadRequestException('Unknown pension');
         return tx.cycleGroup.create({
           data: {
             academicCycleId: cycleId,
+            branchId,
             reusableGroupId: groupId,
             pensionId,
           },
           include: { reusableGroup: true, pension: true },
         });
       });
+    } catch (error) {
+      this.rethrowConflict(error);
+    }
+  }
+  async addCycleBranch(cycleId: number, body: unknown) {
+    const input = bodyObject(body);
+    const branchId = id(input.branchId);
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        if (!(await tx.academicCycle.findUnique({ where: { id: cycleId } })))
+          throw new NotFoundException();
+        const branch = await tx.branch.findUnique({ where: { id: branchId } });
+        const existingBranch = branch
+          ? await tx.academicCycleBranch.findUnique({
+              where: {
+                academicCycleId_branchId: {
+                  academicCycleId: cycleId,
+                  branchId,
+                },
+              },
+            })
+          : null;
+        if (!branch || (!branch.isActive && !existingBranch))
+          throw new BadRequestException('Unknown branch');
+        return tx.academicCycleBranch.create({
+          data: { academicCycleId: cycleId, branchId },
+          include: { branch: true },
+        });
+      });
+    } catch (error) {
+      this.rethrowConflict(error);
+    }
+  }
+  async configureCycleBranch(cycleId: number, body: unknown) {
+    const input = bodyObject(body);
+    const branchId = id(input.branchId);
+    if (!Array.isArray(input.groups))
+      throw new BadRequestException('Groups required');
+    const assignments = input.groups.map((value: unknown) => {
+      const row = bodyObject(value);
+      return { groupId: id(row.groupId), pensionId: id(row.pensionId) };
+    });
+    if (
+      new Set(assignments.map((row) => row.groupId)).size !== assignments.length
+    )
+      throw new BadRequestException('Duplicate group assignment');
+    try {
+      return await this.prisma.$transaction(
+        async (tx) => {
+          const cycles = await tx.$queryRaw<
+            {
+              id: number;
+              category: AcademicCycleCategory;
+              startDate: Date;
+              endDate: Date;
+            }[]
+          >`
+            SELECT "id", "category", "startDate", "endDate" FROM "AcademicCycle"
+            WHERE "id" = ${cycleId} FOR UPDATE
+          `;
+          const cycle = cycles[0];
+          if (!cycle) throw new NotFoundException();
+          const branch = await tx.branch.findUnique({
+            where: { id: branchId },
+          });
+          if (!branch || !branch.isActive)
+            throw new BadRequestException('Unknown branch');
+          const groupIds = assignments.map((row) => row.groupId);
+          const pensionIds = assignments.map((row) => row.pensionId);
+          if (
+            (await tx.group.count({ where: { id: { in: groupIds } } })) !==
+              groupIds.length ||
+            (await tx.pension.count({ where: { id: { in: pensionIds } } })) !==
+              new Set(pensionIds).size
+          )
+            throw new BadRequestException('Unknown group or pension');
+
+          await tx.academicCycleBranch.upsert({
+            where: {
+              academicCycleId_branchId: { academicCycleId: cycleId, branchId },
+            },
+            create: { academicCycleId: cycleId, branchId },
+            update: {},
+          });
+          const current = await tx.cycleGroup.findMany({
+            where: { academicCycleId: cycleId, branchId },
+            include: {
+              _count: {
+                select: {
+                  enrollments: true,
+                  transfersFrom: true,
+                  transfersTo: true,
+                },
+              },
+            },
+          });
+          const selected = new Set(groupIds);
+          const removed = current.filter(
+            (row) => !selected.has(row.reusableGroupId),
+          );
+          if (
+            removed.some(
+              (row) =>
+                row._count.enrollments ||
+                row._count.transfersFrom ||
+                row._count.transfersTo,
+            )
+          )
+            throw new ConflictException('Group has dependent records');
+          if (removed.length)
+            await tx.cycleGroup.deleteMany({
+              where: { id: { in: removed.map((row) => row.id) } },
+            });
+
+          for (const assignment of assignments) {
+            const assigned = await tx.cycleGroup.upsert({
+              where: {
+                academicCycleId_branchId_reusableGroupId: {
+                  academicCycleId: cycleId,
+                  branchId,
+                  reusableGroupId: assignment.groupId,
+                },
+              },
+              create: {
+                academicCycleId: cycleId,
+                branchId,
+                reusableGroupId: assignment.groupId,
+                pensionId: assignment.pensionId,
+              },
+              update: { pensionId: assignment.pensionId },
+            });
+            if (cycle.category === AcademicCycleCategory.SCHOOL) {
+              const pension = await tx.pension.findUniqueOrThrow({
+                where: { id: assignment.pensionId },
+              });
+              await tx.enrollment.updateMany({
+                where: { groupId: assigned.id, pensionAmount: null },
+                data: {
+                  pensionName: pension.name,
+                  pensionBaseAmount: pension.amount,
+                  pensionDiscountAmount: 0,
+                  pensionAmount: pension.amount,
+                  pensionDueDay: pension.dueDay,
+                  pensionStartDate: cycle.startDate,
+                  pensionEndDate: cycle.endDate,
+                },
+              });
+            }
+          }
+          return { branchId, groups: assignments };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
+    } catch (error) {
+      this.rethrowConflict(error);
+    }
+  }
+  async deleteCycleBranch(cycleId: number, branchId: number) {
+    try {
+      return await this.prisma.$transaction(
+        async (tx) => {
+          const rows = await tx.$queryRaw<{ branchId: number }[]>`
+            SELECT "branchId" FROM "AcademicCycleBranch"
+            WHERE "academicCycleId" = ${cycleId} AND "branchId" = ${branchId} FOR UPDATE
+          `;
+          if (!rows.length) throw new NotFoundException();
+          if (
+            await tx.enrollment.count({
+              where: { academicCycleId: cycleId, branchId },
+            })
+          )
+            throw new ConflictException('Branch has enrolled students');
+          const groups = await tx.cycleGroup.findMany({
+            where: { academicCycleId: cycleId, branchId },
+            include: {
+              _count: {
+                select: {
+                  enrollments: true,
+                  transfersFrom: true,
+                  transfersTo: true,
+                },
+              },
+            },
+          });
+          if (
+            groups.some(
+              (row) =>
+                row._count.enrollments ||
+                row._count.transfersFrom ||
+                row._count.transfersTo,
+            )
+          )
+            throw new ConflictException('Branch has historical records');
+          await tx.cycleGroup.deleteMany({
+            where: { academicCycleId: cycleId, branchId },
+          });
+          await tx.academicCycleBranch.delete({
+            where: {
+              academicCycleId_branchId: { academicCycleId: cycleId, branchId },
+            },
+          });
+          return { branchId };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
     } catch (error) {
       this.rethrowConflict(error);
     }
@@ -431,12 +781,6 @@ export class CyclesService {
         if (await tx.enrollment.count({ where: { groupId } }))
           throw new ConflictException('Group has dependent records');
         await tx.cycleGroup.delete({ where: { id: groupId } });
-        if (
-          !(await tx.cycleGroup.count({
-            where: { reusableGroupId: group.reusableGroupId },
-          }))
-        )
-          await tx.group.delete({ where: { id: group.reusableGroupId } });
         return { id: groupId };
       });
     } catch (error) {
@@ -446,7 +790,7 @@ export class CyclesService {
   reusableGroups() {
     return this.prisma.group.findMany({
       orderBy: { name: 'asc' },
-      include: { branch: true, _count: { select: { cycles: true } } },
+      include: { _count: { select: { cycles: true } } },
     });
   }
   async deleteGroup(groupId: number) {
@@ -467,9 +811,8 @@ export class CyclesService {
   }
   async saveGroup(body: unknown, groupId?: number) {
     const input = bodyObject(body);
-    const data = { name: name(input.name), branchId: id(input.branchId) };
+    const data = { name: name(input.name) };
     try {
-      if (!(await this.prisma.branch.findUnique({ where: { id: data.branchId } }))) throw new BadRequestException('Unknown branch');
       if (groupId !== undefined) {
         if (!(await this.prisma.group.findUnique({ where: { id: groupId } })))
           throw new NotFoundException();
@@ -511,7 +854,8 @@ export class CyclesService {
     if ('discountAmount' in input || 'feeId' in input)
       throw new BadRequestException('Enrollment prices are cycle-defined');
     const studentId = id(input.studentId),
-      groupId = id(input.groupId), branchId = id(input.branchId);
+      groupId = id(input.groupId),
+      branchId = id(input.branchId);
     const discountPercent = money(input.discountPercent ?? 0);
     const pensionDiscountPercent = money(input.pensionDiscountPercent ?? 0);
     const discountReason =
@@ -539,8 +883,14 @@ export class CyclesService {
         });
         if (!group || group.academicCycleId !== cycleId)
           throw new BadRequestException('Group must belong to cycle');
-        const reusableGroup = await tx.group.findUniqueOrThrow({ where: { id: group.reusableGroupId } });
-        if (reusableGroup.branchId !== branchId || !(await tx.academicCycleBranch.findUnique({ where: { academicCycleId_branchId: { academicCycleId: cycleId, branchId } } })))
+        if (
+          group.branchId !== branchId ||
+          !(await tx.academicCycleBranch.findUnique({
+            where: {
+              academicCycleId_branchId: { academicCycleId: cycleId, branchId },
+            },
+          }))
+        )
           throw new BadRequestException('Branch unavailable for cycle');
         const fee = cycle.fee;
         // Validity is a calendar date in the institution's timezone.
@@ -554,9 +904,9 @@ export class CyclesService {
         );
         if (
           (cycle.category === AcademicCycleCategory.SCHOOL && !fee) ||
-          (fee && (
-          fee.validFrom > today ||
-          (fee.validUntil && fee.validUntil < today)))
+          (fee &&
+            (fee.validFrom > today ||
+              (fee.validUntil && fee.validUntil < today)))
         )
           throw new BadRequestException('Fee unavailable for this group');
         const baseAmount = fee?.amount ?? new Prisma.Decimal(0);
@@ -583,28 +933,56 @@ export class CyclesService {
           preuniversityInstallments = id(input.preuniversityInstallments);
           if (preuniversityInstallments > 3)
             throw new BadRequestException('Invalid installment count');
-          preuniversityDueRule = input.preuniversityDueRule as PreuniversityDueRule;
-          if (!Object.values(PreuniversityDueRule).includes(preuniversityDueRule))
+          preuniversityDueRule =
+            input.preuniversityDueRule as PreuniversityDueRule;
+          if (
+            !Object.values(PreuniversityDueRule).includes(preuniversityDueRule)
+          )
             throw new BadRequestException('Invalid due rule');
         }
-        const obligations = cycle.category === AcademicCycleCategory.SCHOOL
-          ? cyclePeriods(cycle.startDate, cycle.endDate).map((period) => {
-              const [year, month] = period.split('-').map(Number);
-              const day = Math.min(group.pension!.dueDay, new Date(Date.UTC(year, month, 0)).getUTCDate());
-              return { period, name: group.pension!.name, baseAmount: pensionBaseAmount, discountAmount: pensionDiscountAmount, amount: pensionAmount, dueDate: new Date(`${period}-${String(day).padStart(2, '0')}T00:00:00.000Z`) };
-            })
-          : (() => {
-              const baseSchedule = preuniversitySchedule(pensionBaseAmount, preuniversityInstallments!, preuniversityDueRule!, cycle.startDate);
-              const payableSchedule = preuniversitySchedule(pensionAmount, preuniversityInstallments!, preuniversityDueRule!, cycle.startDate);
-              return payableSchedule.map((installment, index) => ({
-                period: installment.period,
-                name: `Cuota ${installment.number} de ${preuniversityInstallments}`,
-                baseAmount: baseSchedule[index].amount,
-                discountAmount: baseSchedule[index].amount.minus(installment.amount),
-                amount: installment.amount,
-                dueDate: installment.dueDate,
-              }));
-            })();
+        const obligations =
+          cycle.category === AcademicCycleCategory.SCHOOL
+            ? cyclePeriods(cycle.startDate, cycle.endDate).map((period) => {
+                const [year, month] = period.split('-').map(Number);
+                const day = Math.min(
+                  group.pension!.dueDay,
+                  new Date(Date.UTC(year, month, 0)).getUTCDate(),
+                );
+                return {
+                  period,
+                  name: group.pension!.name,
+                  baseAmount: pensionBaseAmount,
+                  discountAmount: pensionDiscountAmount,
+                  amount: pensionAmount,
+                  dueDate: new Date(
+                    `${period}-${String(day).padStart(2, '0')}T00:00:00.000Z`,
+                  ),
+                };
+              })
+            : (() => {
+                const baseSchedule = preuniversitySchedule(
+                  pensionBaseAmount,
+                  preuniversityInstallments!,
+                  preuniversityDueRule!,
+                  cycle.startDate,
+                );
+                const payableSchedule = preuniversitySchedule(
+                  pensionAmount,
+                  preuniversityInstallments!,
+                  preuniversityDueRule!,
+                  cycle.startDate,
+                );
+                return payableSchedule.map((installment, index) => ({
+                  period: installment.period,
+                  name: `Cuota ${installment.number} de ${preuniversityInstallments}`,
+                  baseAmount: baseSchedule[index].amount,
+                  discountAmount: baseSchedule[index].amount.minus(
+                    installment.amount,
+                  ),
+                  amount: installment.amount,
+                  dueDate: installment.dueDate,
+                }));
+              })();
         return tx.enrollment.create({
           data: {
             studentId,
@@ -625,7 +1003,10 @@ export class CyclesService {
             pensionDiscountPercent,
             pensionDiscountAmount,
             pensionAmount,
-            pensionDueDay: cycle.category === AcademicCycleCategory.SCHOOL ? group.pension!.dueDay : null,
+            pensionDueDay:
+              cycle.category === AcademicCycleCategory.SCHOOL
+                ? group.pension.dueDay
+                : null,
             pensionObligations: { create: obligations },
           },
           include: enrollmentInclude,
@@ -637,42 +1018,116 @@ export class CyclesService {
   }
   async transfer(enrollmentId: number, body: unknown) {
     const input = bodyObject(body);
-    const branchId = id(input.branchId), groupId = id(input.groupId);
+    const branchId = id(input.branchId),
+      groupId = id(input.groupId);
     const reason = input.reason ? name(input.reason, 500) : null;
-    const transferDate = input.transferDate ? date(input.transferDate) : date(institutionToday());
-    return this.prisma.$transaction(async (tx) => {
-      const rows = await tx.$queryRaw<{id:number}[]>`SELECT "id" FROM "AcademicEnrollment" WHERE "id"=${enrollmentId} FOR UPDATE`;
-      if (!rows.length) throw new NotFoundException();
-      const enrollment = await tx.enrollment.findUniqueOrThrow({ where: { id: enrollmentId }, include: { payments: true } });
-      const destination = await tx.cycleGroup.findUnique({ where: { id: groupId }, include: { reusableGroup: true, pension: true } });
-      if (!destination || destination.academicCycleId !== enrollment.academicCycleId || destination.reusableGroup.branchId !== branchId)
-        throw new BadRequestException('Group must belong to branch and cycle');
-      if (!(await tx.academicCycleBranch.findUnique({ where: { academicCycleId_branchId: { academicCycleId: enrollment.academicCycleId, branchId } } })))
-        throw new BadRequestException('Branch unavailable for cycle');
-      if (enrollment.branchId === branchId && enrollment.groupId === groupId)
-        throw new BadRequestException('Enrollment location unchanged');
-      if (!destination.pension) throw new BadRequestException('Group pension required');
-      const discountPercent = enrollment.pensionDiscountPercent ?? new Prisma.Decimal(0);
-      const discountAmount = destination.pension.amount.mul(discountPercent).div(100).toDecimalPlaces(2);
-      const currentPeriod = transferDate.toISOString().slice(0, 7);
-      const paidPeriods = new Set(enrollment.payments.filter((p) => p.paymentType === 'PENSION').map((p) => p.period));
-      const changeable = await tx.pensionObligation.findMany({ where: { enrollmentId, period: { gte: currentPeriod, notIn: [...paidPeriods].filter((p): p is string => !!p) } } });
-      for (const obligation of changeable) {
-        const [year, month] = obligation.period.split('-').map(Number);
-        const day = Math.min(destination.pension.dueDay, new Date(Date.UTC(year, month, 0)).getUTCDate());
-        await tx.pensionObligation.update({ where: { id: obligation.id }, data: {
-          name: destination.pension.name, baseAmount: destination.pension.amount, discountAmount,
-          amount: destination.pension.amount.minus(discountAmount),
-          dueDate: new Date(`${obligation.period}-${String(day).padStart(2, '0')}T00:00:00.000Z`),
-        } });
-      }
-      await tx.enrollmentTransfer.create({ data: { enrollmentId, previousBranchId: enrollment.branchId, previousGroupId: enrollment.groupId, newBranchId: branchId, newGroupId: groupId, transferDate, reason } });
-      return tx.enrollment.update({ where: { id: enrollmentId }, data: {
-        branchId, groupId, pensionName: destination.pension.name,
-        pensionBaseAmount: destination.pension.amount, pensionDiscountAmount: discountAmount,
-        pensionAmount: destination.pension.amount.minus(discountAmount), pensionDueDay: destination.pension.dueDay,
-      }, include: enrollmentInclude });
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    const transferDate = input.transferDate
+      ? date(input.transferDate)
+      : date(institutionToday());
+    return this.prisma.$transaction(
+      async (tx) => {
+        const rows = await tx.$queryRaw<
+          { id: number }[]
+        >`SELECT "id" FROM "AcademicEnrollment" WHERE "id"=${enrollmentId} FOR UPDATE`;
+        if (!rows.length) throw new NotFoundException();
+        const enrollment = await tx.enrollment.findUniqueOrThrow({
+          where: { id: enrollmentId },
+          include: { payments: true },
+        });
+        const destination = await tx.cycleGroup.findUnique({
+          where: { id: groupId },
+          include: { reusableGroup: true, pension: true },
+        });
+        if (
+          !destination ||
+          destination.academicCycleId !== enrollment.academicCycleId ||
+          destination.branchId !== branchId
+        )
+          throw new BadRequestException(
+            'Group must belong to branch and cycle',
+          );
+        if (
+          !(await tx.academicCycleBranch.findUnique({
+            where: {
+              academicCycleId_branchId: {
+                academicCycleId: enrollment.academicCycleId,
+                branchId,
+              },
+            },
+          }))
+        )
+          throw new BadRequestException('Branch unavailable for cycle');
+        if (enrollment.branchId === branchId && enrollment.groupId === groupId)
+          throw new BadRequestException('Enrollment location unchanged');
+        if (!destination.pension)
+          throw new BadRequestException('Group pension required');
+        const discountPercent =
+          enrollment.pensionDiscountPercent ?? new Prisma.Decimal(0);
+        const discountAmount = destination.pension.amount
+          .mul(discountPercent)
+          .div(100)
+          .toDecimalPlaces(2);
+        const currentPeriod = transferDate.toISOString().slice(0, 7);
+        const paidPeriods = new Set(
+          enrollment.payments
+            .filter((p) => p.paymentType === 'PENSION')
+            .map((p) => p.period),
+        );
+        const changeable = await tx.pensionObligation.findMany({
+          where: {
+            enrollmentId,
+            period: {
+              gte: currentPeriod,
+              notIn: [...paidPeriods].filter((p): p is string => !!p),
+            },
+          },
+        });
+        for (const obligation of changeable) {
+          const [year, month] = obligation.period.split('-').map(Number);
+          const day = Math.min(
+            destination.pension.dueDay,
+            new Date(Date.UTC(year, month, 0)).getUTCDate(),
+          );
+          await tx.pensionObligation.update({
+            where: { id: obligation.id },
+            data: {
+              name: destination.pension.name,
+              baseAmount: destination.pension.amount,
+              discountAmount,
+              amount: destination.pension.amount.minus(discountAmount),
+              dueDate: new Date(
+                `${obligation.period}-${String(day).padStart(2, '0')}T00:00:00.000Z`,
+              ),
+            },
+          });
+        }
+        await tx.enrollmentTransfer.create({
+          data: {
+            enrollmentId,
+            previousBranchId: enrollment.branchId,
+            previousGroupId: enrollment.groupId,
+            newBranchId: branchId,
+            newGroupId: groupId,
+            transferDate,
+            reason,
+          },
+        });
+        return tx.enrollment.update({
+          where: { id: enrollmentId },
+          data: {
+            branchId,
+            groupId,
+            pensionName: destination.pension.name,
+            pensionBaseAmount: destination.pension.amount,
+            pensionDiscountAmount: discountAmount,
+            pensionAmount: destination.pension.amount.minus(discountAmount),
+            pensionDueDay: destination.pension.dueDay,
+          },
+          include: enrollmentInclude,
+        });
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
   }
   private rethrowConflict(error: unknown): never {
     if (

@@ -46,6 +46,7 @@ async function main() {
         passwordHash: await hashPassword(password),
         fullName: 'Administrador',
         role: 'ADMIN',
+        adminLevel: 'MAIN',
         isActive: true,
       },
     });

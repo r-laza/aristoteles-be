@@ -29,12 +29,31 @@ El seed crea `admin` / `admin2026` con rol `ADMIN`, sin duplicarlo ni restablece
 - `POST /api/auth/login`: JSON `{ "username": "admin", "password": "admin2026", "role": "ADMIN" }`.
 - `POST /api/auth/logout`: elimina la cookie del navegador.
 - `GET /api/auth/me`: usuario autenticado, sin hash.
+- `POST /api/auth/profile`: administradores actualizan únicamente su propio nombre, usuario y contraseña opcional. Cambiar el usuario o la contraseña requiere `currentPassword`; no acepta `id`, `role`, `adminLevel` ni `isActive`.
 - `GET /api/admin/users` y `POST /api/admin/users`: solo `ADMIN`. La creación recibe `fullName`, `username`, `password` y `role`.
 - `GET /api/dashboard`: solo `STUDENT`; conserva el dashboard y sus datos de demostración existentes. La asignación de cursos por cuenta todavía no forma parte de este módulo.
 
 Todas las escrituras deben enviar `Content-Type: application/json` y `X-Requested-With: Aristoteles`. El frontend ya lo hace. No se habilita CORS: usa el proxy de Vite durante desarrollo y un proxy del mismo origen en producción.
 
+### Niveles de administrador
+
+Los dos niveles conservan el rol de inicio de sesión `ADMIN`: `adminLevel=MAIN` (Administrador principal) y `REGULAR` (Administrador). Ambos mantienen acceso al dashboard, inscripciones, pagos y configuración previamente autorizada. Solo un administrador principal activo puede crear o modificar cuentas de administrador mediante `/api/admin/users` o `/api/admin/people`, incluidos estado, rol, nivel y contraseña. Los administradores regulares pueden consultar la lista y seguir gestionando docentes y estudiantes. Las cuentas de administrador no se pueden modificar mediante los endpoints de acceso estudiantil.
+
+La migración `20261127020000_administrator_levels` conserva todas las cuentas y promueve a **todos los administradores activos existentes** a `MAIN`; los nuevos administradores usan `REGULAR` por defecto. Los seeds crean el administrador inicial como `MAIN` y nunca restablecen cuentas existentes. Antes de aplicar la migración en una base con cuentas, debe existir al menos un administrador activo; de lo contrario, la migración se revierte sin activar cuentas automáticamente. Una base nueva vacía permite crear primero al administrador principal mediante el seed.
+
+Las escrituras administrativas se serializan con un bloqueo transaccional; desactivar, degradar o cambiar el rol del último administrador principal activo devuelve `409` con código `LAST_MAIN_ADMINISTRATOR`. Un trigger diferido protege también actualizaciones y eliminaciones directas o concurrentes en PostgreSQL. El nivel se consulta desde la base en cada solicitud, no desde un permiso persistido en el JWT.
+
+Después de revisar la migración, aplica `npx prisma migrate deploy` y regenera el cliente con `npx prisma generate` antes de arrancar el backend actualizado. Las pruebas HTTP aisladas se ejecutan con `npm test -- --runInBand admin/admin-permissions.spec.ts`; no modifican una base real.
+
 El JWT dura ocho horas y se guarda en una cookie HTTP-only, SameSite=Strict, con ruta `/api`. En producción configura `NODE_ENV=production` y HTTPS para la cookie Secure. Cada solicitud consulta el rol y estado actuales en la base de datos. El logout elimina la cookie; no existe un registro de revocación de JWT en esta primera implementación.
+
+## Analítica del dashboard administrativo
+
+`GET /api/admin/dashboard` requiere `ADMIN` y acepta `branchId`, `cycleId` y `groupId` opcionales. La selección es jerárquica: sede, ciclo de esa sede y grupo reutilizable asignado al ciclo y sede. Sin sede explícita se conserva la primera sede; no existe una selección de todas las sedes.
+
+La respuesta incluye `summary`, `enrollmentDistribution` (`school` y `preuniversity`), `monthlyCollected`, `paymentMethods` y `unrepresentedCollected` dentro de `dashboard`. Las inscripciones se cuentan por estudiante y los pagos por registro, usando importes Decimal. La categoría Escolar/Preuniversitario pertenece al ciclo: la categoría no seleccionada devuelve una distribución vacía. Los saldos pendientes y vencidos usan las obligaciones y reglas de pago existentes.
+
+`paymentMethods` contiene únicamente `CASH`, `TRANSFER`, `YAPE` y `PLIN`. Los pagos históricos con otros métodos siguen incluidos en la recaudación total y en `unrepresentedCollected`; no se reasignan a métodos actuales. Las rutas de estudiantes morosos, pendientes, al día, detalle y exportación no cambian. Esta ampliación no requiere migraciones.
 
 ## Verificación
 

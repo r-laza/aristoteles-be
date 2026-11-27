@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   ConflictException,
+  ForbiddenException,
   Controller,
   Get,
   Injectable,
@@ -9,16 +10,23 @@ import {
   NotFoundException,
   Param,
   Post,
+  Req,
 } from '@nestjs/common';
 import {
   Gender,
+  AdminLevel,
   Prisma,
   ReceiptDocumentType,
   Relationship,
 } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { Roles } from '../auth/roles.guard';
-import { publicUserSelect } from '../auth/auth.types';
+import {
+  publicUserSelect,
+  type AuthRequest,
+  type PublicUser,
+} from '../auth/auth.types';
+import { assertCanManageAdministrators } from '../auth/admin-permissions';
 import { validateCredentials } from '../auth/validation';
 import { hashPassword } from '../auth/password';
 
@@ -31,8 +39,35 @@ export class AdminUsersService {
       orderBy: { createdAt: 'desc' },
     });
   }
-  async create(body: unknown) {
+  async create(body: unknown, actor: PublicUser) {
     const { password, ...data } = validateCredentials(body, true);
+    const input = object(body);
+    if (data.role === 'ADMIN') {
+      return this.prisma
+        .$transaction(async (tx) => {
+          await authorizeAdministratorWrite(tx, actor);
+          return tx.user.create({
+            data: {
+              ...data,
+              adminLevel: administratorLevel(input),
+              passwordHash: await hashPassword(password),
+            },
+            select: publicUserSelect,
+          });
+        })
+        .catch((error: unknown) => {
+          if (
+            error instanceof Prisma.PrismaClientKnownRequestError &&
+            error.code === 'P2002'
+          )
+            throw new ConflictException('Username already exists');
+          throw error;
+        });
+    }
+    if (input.adminLevel !== undefined)
+      throw new BadRequestException(
+        'Administrator level requires administrator role',
+      );
     try {
       return await this.prisma.user.create({
         data: { ...data, passwordHash: await hashPassword(password) },
@@ -56,6 +91,29 @@ function object(body: unknown): Record<string, unknown> {
   return body as Record<string, unknown>;
 }
 
+function administratorLevel(
+  input: Record<string, unknown>,
+  fallback: AdminLevel = AdminLevel.REGULAR,
+) {
+  const level = input.adminLevel ?? fallback;
+  if (level !== AdminLevel.MAIN && level !== AdminLevel.REGULAR)
+    throw new BadRequestException('Invalid administrator level');
+  return level;
+}
+
+async function authorizeAdministratorWrite(
+  tx: Prisma.TransactionClient,
+  actor: PublicUser,
+) {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(849217001)`;
+  const currentActor = await tx.user.findUnique({
+    where: { id: actor.id },
+    select: publicUserSelect,
+  });
+  if (!currentActor) throw new NotFoundException();
+  assertCanManageAdministrators(currentActor);
+}
+
 function invalid(
   field: string,
   reason: 'required' | 'tooLong' | 'format',
@@ -63,11 +121,7 @@ function invalid(
   throw new BadRequestException({ code: 'VALIDATION_ERROR', field, reason });
 }
 
-function text(
-  input: Record<string, unknown>,
-  key: string,
-  max = 200,
-): string {
+function text(input: Record<string, unknown>, key: string, max = 200): string {
   const value = input[key];
   if (typeof value !== 'string' || !value.trim()) invalid(key, 'required');
   if (value.trim().length > max) invalid(key, 'tooLong');
@@ -121,9 +175,13 @@ export class AdminPeopleService {
     ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   }
 
-  async create(body: unknown) {
+  async create(body: unknown, actor: PublicUser) {
     const input = object(body);
     const role = input.role;
+    if (role !== 'ADMIN' && input.adminLevel !== undefined)
+      throw new BadRequestException(
+        'Administrator level requires administrator role',
+      );
     if (role === 'STUDENT') return this.createStudent(input);
     if (role !== 'TEACHER' && role !== 'ADMIN')
       throw new BadRequestException('Invalid role');
@@ -132,16 +190,31 @@ export class AdminPeopleService {
     const credentials = validateCredentials({ ...input, role }, true);
     const { password, ...userData } = credentials;
     return this.withConflict(async () => {
-      const user = await this.prisma.user.create({
-        data: {
-          ...userData,
-          passwordHash: await hashPassword(password),
-          role,
-          isActive:
-            input.isActive === undefined ? true : input.isActive === true,
-        },
-        select: publicUserSelect,
-      });
+      const create = async (client: Prisma.TransactionClient) =>
+        client.user.create({
+          data: {
+            ...userData,
+            passwordHash: await hashPassword(password),
+            role,
+            ...(role === 'ADMIN'
+              ? { adminLevel: administratorLevel(input) }
+              : {}),
+            isActive:
+              input.isActive === undefined ? true : input.isActive === true,
+          },
+          select: publicUserSelect,
+        });
+      if (role !== 'ADMIN' && input.adminLevel !== undefined)
+        throw new BadRequestException(
+          'Administrator level requires administrator role',
+        );
+      const user =
+        role === 'ADMIN'
+          ? await this.prisma.$transaction(async (tx) => {
+              await authorizeAdministratorWrite(tx, actor);
+              return create(tx);
+            })
+          : await create(this.prisma);
       return { ...user, kind: 'USER' as const };
     });
   }
@@ -161,6 +234,10 @@ export class AdminPeopleService {
           include: { user: { select: publicUserSelect } },
         });
         if (updated.userId) {
+          if (updated.user?.role === 'ADMIN')
+            throw new ForbiddenException({
+              code: 'ADMIN_ACCOUNT_WRONG_ENDPOINT',
+            });
           await tx.user.update({
             where: { id: updated.userId },
             data: { fullName: updated.fullName },
@@ -172,12 +249,8 @@ export class AdminPeopleService {
     });
   }
 
-  async updateUser(userId: number, body: unknown) {
+  async updateUser(userId: number, body: unknown, actor: PublicUser) {
     const input = object(body);
-    const current = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
-    if (!current || current.role === 'STUDENT') throw new NotFoundException();
     if (typeof input.isActive !== 'boolean')
       throw new BadRequestException('Invalid status');
     const isActive = input.isActive;
@@ -185,15 +258,61 @@ export class AdminPeopleService {
     const username = text(input, 'username', 100);
     const password = optionalText(input, 'password', 256);
     return this.withConflict(async () => {
-      const user = await this.prisma.user.update({
-        where: { id: userId },
-        data: {
-          fullName,
-          username,
-          isActive,
-          ...(password ? { passwordHash: await hashPassword(password) } : {}),
-        },
-        select: publicUserSelect,
+      const user = await this.prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(849217001)`;
+        const current = await tx.user.findUnique({ where: { id: userId } });
+        if (!current || current.role === 'STUDENT')
+          throw new NotFoundException();
+        const role = input.role ?? current.role;
+        if (role !== 'ADMIN' && role !== 'TEACHER')
+          throw new BadRequestException('Invalid role');
+        if (
+          role !== 'ADMIN' &&
+          input.adminLevel !== undefined &&
+          input.adminLevel !== AdminLevel.REGULAR
+        )
+          throw new BadRequestException(
+            'Administrator level requires administrator role',
+          );
+        if (
+          current.role === 'ADMIN' ||
+          role === 'ADMIN' ||
+          input.adminLevel !== undefined
+        )
+          await authorizeAdministratorWrite(tx, actor);
+        const adminLevel =
+          role === 'ADMIN'
+            ? administratorLevel(input, current.adminLevel)
+            : AdminLevel.REGULAR;
+        if (
+          current.role === 'ADMIN' &&
+          current.adminLevel === AdminLevel.MAIN &&
+          current.isActive &&
+          (role !== 'ADMIN' || adminLevel !== AdminLevel.MAIN || !isActive)
+        ) {
+          const remaining = await tx.user.count({
+            where: {
+              role: 'ADMIN',
+              adminLevel: AdminLevel.MAIN,
+              isActive: true,
+              id: { not: userId },
+            },
+          });
+          if (!remaining)
+            throw new ConflictException({ code: 'LAST_MAIN_ADMINISTRATOR' });
+        }
+        return tx.user.update({
+          where: { id: userId },
+          data: {
+            fullName,
+            username,
+            isActive,
+            role,
+            adminLevel,
+            ...(password ? { passwordHash: await hashPassword(password) } : {}),
+          },
+          select: publicUserSelect,
+        });
       });
       return { ...user, kind: 'USER' as const };
     });
@@ -206,6 +325,8 @@ export class AdminPeopleService {
       include: { user: true },
     });
     if (!student) throw new NotFoundException();
+    if (student.user?.role === 'ADMIN')
+      throw new ForbiddenException({ code: 'ADMIN_ACCOUNT_WRONG_ENDPOINT' });
     if (typeof input.isActive !== 'boolean')
       throw new BadRequestException('Invalid status');
     const isActive = input.isActive;
@@ -292,8 +413,7 @@ export class AdminPeopleService {
   private studentData(input: Record<string, unknown>) {
     const firstName = text(input, 'firstName');
     const lastName = text(input, 'lastName');
-    if (typeof input.isActive !== 'boolean')
-      invalid('isActive', 'format');
+    if (typeof input.isActive !== 'boolean') invalid('isActive', 'format');
     const isActive = input.isActive;
     if (!Object.values(Gender).includes(input.gender as Gender))
       invalid('gender', 'format');
@@ -385,8 +505,8 @@ export class AdminUsersController {
     return this.users.list();
   }
   @Post()
-  create(@Body() body: unknown) {
-    return this.users.create(body);
+  create(@Body() body: unknown, @Req() request: AuthRequest) {
+    return this.users.create(body, request.user);
   }
 }
 
@@ -399,8 +519,8 @@ export class AdminPeopleController {
     return this.people.list();
   }
   @Post()
-  create(@Body() body: unknown) {
-    return this.people.create(body);
+  create(@Body() body: unknown, @Req() request: AuthRequest) {
+    return this.people.create(body, request.user);
   }
   @Post('students/:id')
   updateStudent(@Param('id') id: string, @Body() body: unknown) {
@@ -411,8 +531,12 @@ export class AdminPeopleController {
     return this.people.manageStudentAccess(this.id(id), body);
   }
   @Post('users/:id')
-  updateUser(@Param('id') id: string, @Body() body: unknown) {
-    return this.people.updateUser(this.id(id), body);
+  updateUser(
+    @Param('id') id: string,
+    @Body() body: unknown,
+    @Req() request: AuthRequest,
+  ) {
+    return this.people.updateUser(this.id(id), body, request.user);
   }
   private id(value: string) {
     const id = Number(value);

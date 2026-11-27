@@ -37,6 +37,7 @@ describe('Authentication and role authorization (PostgreSQL)', () => {
         username: `${prefix}-admin`,
         fullName: 'Test Admin',
         role: 'ADMIN',
+        adminLevel: 'MAIN',
         passwordHash: await hashPassword(password),
       },
     });

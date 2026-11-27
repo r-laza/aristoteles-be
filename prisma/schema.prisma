@@ -100,10 +100,16 @@ model User {
   passwordHash String
   fullName     String
   role         Role
+  adminLevel   AdminLevel @default(REGULAR)
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   student      Student?
+}
+
+enum AdminLevel {
+  MAIN
+  REGULAR
 }
 
 model AcademicCycle {
@@ -150,7 +156,7 @@ model Branch {
   isActive      Boolean               @default(true)
   createdAt     DateTime              @default(now())
   updatedAt     DateTime              @updatedAt
-  groups        Group[]
+  cycleGroups   CycleGroup[]
   cycles        AcademicCycleBranch[]
   enrollments   Enrollment[]
   transfersFrom EnrollmentTransfer[]  @relation("PreviousBranch")
@@ -170,12 +176,9 @@ model AcademicCycleBranch {
 
 model Group {
   id       Int          @id @default(autoincrement())
-  name     String
-  branchId Int
-  branch   Branch       @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  name     String       @unique
   cycles   CycleGroup[]
 
-  @@unique([branchId, name])
   @@map("ReusableGroup")
 }
 
@@ -185,6 +188,8 @@ model CycleGroup {
   id              Int                  @id @default(autoincrement())
   reusableGroupId Int
   reusableGroup   Group                @relation(fields: [reusableGroupId], references: [id])
+  branchId        Int
+  branch          Branch               @relation(fields: [branchId], references: [id], onDelete: Restrict)
   fees            EnrollmentFee[]
   academicCycleId Int
   academicCycle   AcademicCycle        @relation(fields: [academicCycleId], references: [id])
@@ -194,8 +199,9 @@ model CycleGroup {
   transfersFrom   EnrollmentTransfer[] @relation("PreviousGroup")
   transfersTo     EnrollmentTransfer[] @relation("NewGroup")
 
-  @@unique([academicCycleId, reusableGroupId])
-  @@unique([id, academicCycleId])
+  @@unique([academicCycleId, branchId, reusableGroupId])
+  @@unique([id, academicCycleId, branchId])
+  @@index([branchId])
   @@map("Group")
 }
 
@@ -224,7 +230,7 @@ model Enrollment {
   branchId               Int
   branch                 Branch               @relation(fields: [branchId], references: [id], onDelete: Restrict)
   groupId                Int
-  group                  CycleGroup           @relation(fields: [groupId, academicCycleId], references: [id, academicCycleId])
+  group                  CycleGroup           @relation(fields: [groupId, academicCycleId, branchId], references: [id, academicCycleId, branchId])
   feeId                  Int?
   fee                    EnrollmentFee?       @relation(fields: [feeId], references: [id])
   baseAmount             Decimal              @db.Decimal(12, 2)

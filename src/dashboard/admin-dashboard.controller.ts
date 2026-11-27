@@ -1,4 +1,11 @@
-import { Controller, Get, Param, ParseIntPipe, Query, Res } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Param,
+  ParseIntPipe,
+  Query,
+  Res,
+} from '@nestjs/common';
 import type { Response } from 'express';
 import { institutionToday } from '../payments/obligations';
 import { Roles } from '../auth/roles.guard';
@@ -15,7 +22,11 @@ export class AdminDashboardController {
     @Query('cycleId', new ParseIntPipe({ optional: true })) cycleId?: number,
     @Query('groupId', new ParseIntPipe({ optional: true })) groupId?: number,
   ) {
-    return this.dashboardService.getAdminDashboard({ branchId, cycleId, groupId });
+    return this.dashboardService.getAdminDashboard({
+      branchId,
+      cycleId,
+      groupId,
+    });
   }
 
   @Get('payments')
@@ -26,7 +37,13 @@ export class AdminDashboardController {
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,
     @Query('search') search = '',
   ) {
-    return this.dashboardService.payments({ branchId, cycleId, groupId, page, search });
+    return this.dashboardService.payments({
+      branchId,
+      cycleId,
+      groupId,
+      page,
+      search,
+    });
   }
 
   @Get('debtors')
@@ -37,7 +54,13 @@ export class AdminDashboardController {
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,
     @Query('search') search = '',
   ) {
-    return this.dashboardService.debtors({ branchId, cycleId, groupId, page, search });
+    return this.dashboardService.debtors({
+      branchId,
+      cycleId,
+      groupId,
+      page,
+      search,
+    });
   }
 
   @Get('pending')
@@ -48,7 +71,13 @@ export class AdminDashboardController {
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,
     @Query('search') search = '',
   ) {
-    return this.dashboardService.pending({ branchId, cycleId, groupId, page, search });
+    return this.dashboardService.pending({
+      branchId,
+      cycleId,
+      groupId,
+      page,
+      search,
+    });
   }
 
   @Get('debtors/export')
@@ -59,9 +88,20 @@ export class AdminDashboardController {
     @Query('groupId', new ParseIntPipe({ optional: true })) groupId?: number,
     @Query('search') search = '',
   ) {
-    const content = await this.dashboardService.overdueExport({ branchId, cycleId, groupId, search });
-    response.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    response.setHeader('Content-Disposition', `attachment; filename="estudiantes_morosos_${institutionToday()}.xlsx"`);
+    const content = await this.dashboardService.overdueExport({
+      branchId,
+      cycleId,
+      groupId,
+      search,
+    });
+    response.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    response.setHeader(
+      'Content-Disposition',
+      `attachment; filename="estudiantes_morosos_${institutionToday()}.xlsx"`,
+    );
     response.send(Buffer.from(content));
   }
 
@@ -72,7 +112,11 @@ export class AdminDashboardController {
     @Query('cycleId', new ParseIntPipe({ optional: true })) cycleId?: number,
     @Query('groupId', new ParseIntPipe({ optional: true })) groupId?: number,
   ) {
-    return this.dashboardService.debtorDetail(enrollmentId, { branchId, cycleId, groupId });
+    return this.dashboardService.debtorDetail(enrollmentId, {
+      branchId,
+      cycleId,
+      groupId,
+    });
   }
 
   @Get('students/:studentId/financial-detail')
@@ -82,6 +126,10 @@ export class AdminDashboardController {
     @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
     @Query('groupId', new ParseIntPipe({ optional: true })) groupId?: number,
   ) {
-    return this.dashboardService.studentFinancialDetail(studentId, { cycleId, branchId, groupId });
+    return this.dashboardService.studentFinancialDetail(studentId, {
+      cycleId,
+      branchId,
+      groupId,
+    });
   }
 }

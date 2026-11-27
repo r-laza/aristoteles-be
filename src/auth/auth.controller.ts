@@ -10,6 +10,7 @@ import {
 import type { CookieOptions, Response } from 'express';
 import { AuthService } from './auth.service';
 import { Public } from './auth.guard';
+import { Roles } from './roles.guard';
 import { AUTH_COOKIE, SESSION_SECONDS } from './auth.types';
 import type { AuthRequest } from './auth.types';
 
@@ -47,5 +48,10 @@ export class AuthController {
   @Get('me')
   me(@Req() request: AuthRequest) {
     return request.user;
+  }
+  @Post('profile')
+  @Roles('ADMIN')
+  profile(@Req() request: AuthRequest, @Body() body: unknown) {
+    return this.auth.updateProfile(request.user, body);
   }
 }

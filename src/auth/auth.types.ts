@@ -6,6 +6,7 @@ export const publicUserSelect = {
   username: true,
   fullName: true,
   role: true,
+  adminLevel: true,
   isActive: true,
   createdAt: true,
   updatedAt: true,

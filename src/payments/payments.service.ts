@@ -126,6 +126,7 @@ export class PaymentsService {
         group: {
           select: { id: true, reusableGroup: { select: { name: true } } },
         },
+        branch: { select: { id: true, name: true } },
         payments: {
           select: {
             amount: true,
@@ -168,8 +169,10 @@ export class PaymentsService {
           id: enrollment.group.id,
           name: enrollment.group.reusableGroup.name,
         },
+        branch: enrollment.branch,
         cycle: enrollment.academicCycle.name,
-        enrollmentFeeName: enrollment.enrollmentFeeName ?? enrollment.fee?.name ?? null,
+        enrollmentFeeName:
+          enrollment.enrollmentFeeName ?? enrollment.fee?.name ?? null,
         pensionName: enrollment.pensionName,
         pensionMonthlyAmount: enrollment.pensionAmount,
         baseAmount: enrollment.baseAmount,
@@ -359,7 +362,9 @@ export class PaymentsService {
     if (!payment?.receiptNumber) throw new NotFoundException();
     const pension = payment.paymentType === 'PENSION';
     const pensionObligation = pension
-      ? payment.enrollment.pensionObligations.find((item) => item.period === payment.period)
+      ? payment.enrollment.pensionObligations.find(
+          (item) => item.period === payment.period,
+        )
       : null;
     return {
       paymentId: payment.id,
@@ -471,7 +476,10 @@ export class PaymentsService {
     const paymentType = input.paymentType ?? 'ENROLLMENT';
     const periodPattern = /^\d{4}-(0[1-9]|1[0-2])$/;
     const period = input.period ?? null;
-    let requested: { paymentType: 'ENROLLMENT' | 'PENSION'; period: string | null }[];
+    let requested: {
+      paymentType: 'ENROLLMENT' | 'PENSION';
+      period: string | null;
+    }[];
     if (input.obligations !== undefined) {
       if (
         !Array.isArray(input.obligations) ||
@@ -500,8 +508,9 @@ export class PaymentsService {
         };
       });
       if (
-        new Set(requested.map((item) => `${item.paymentType}:${item.period ?? ''}`)).size !==
-        requested.length
+        new Set(
+          requested.map((item) => `${item.paymentType}:${item.period ?? ''}`),
+        ).size !== requested.length
       )
         throw new BadRequestException('Invalid payment obligations');
     } else if (input.periods !== undefined) {
@@ -520,7 +529,8 @@ export class PaymentsService {
       )
         throw new BadRequestException('Invalid payment periods');
       requested = (input.periods as string[]).map((value) => ({
-        paymentType: 'PENSION', period: value,
+        paymentType: 'PENSION',
+        period: value,
       }));
     } else {
       if (paymentType !== 'ENROLLMENT' && paymentType !== 'PENSION')
@@ -531,10 +541,12 @@ export class PaymentsService {
           (typeof period !== 'string' || !periodPattern.test(period)))
       )
         throw new BadRequestException('Invalid payment period');
-      requested = [{
-        paymentType: paymentType as 'ENROLLMENT' | 'PENSION',
-        period: period as string | null,
-      }];
+      requested = [
+        {
+          paymentType: paymentType,
+          period: period as string | null,
+        },
+      ];
     }
     const reference = optionalText(input.reference, 200),
       notes = optionalText(input.notes, 1000);
@@ -548,13 +560,21 @@ export class PaymentsService {
         if (!locked.length) throw new NotFoundException();
         const enrollment = await tx.enrollment.findUniqueOrThrow({
           where: { id: enrollmentId },
-          include: { academicCycle: true, payments: true, pensionObligations: { orderBy: { period: 'asc' } }, branch: true, group: { include: { reusableGroup: true } } },
+          include: {
+            academicCycle: true,
+            payments: true,
+            pensionObligations: { orderBy: { period: 'asc' } },
+            branch: true,
+            group: { include: { reusableGroup: true } },
+          },
         });
         if (enrollment.academicCycle.status !== AcademicCycleStatus.ACTIVE)
           throw new ConflictException('Academic cycle is not active');
-        const charges = obligations(enrollment).filter(
-          (charge) => requested.some(
-            (item) => item.paymentType === charge.paymentType && item.period === charge.period,
+        const charges = obligations(enrollment).filter((charge) =>
+          requested.some(
+            (item) =>
+              item.paymentType === charge.paymentType &&
+              item.period === charge.period,
           ),
         );
         if (charges.length !== requested.length)

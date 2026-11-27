@@ -1,4 +1,11 @@
-import { Controller, Get, Module, Param, ParseIntPipe, Post } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Module,
+  Param,
+  ParseIntPipe,
+  Post,
+} from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { Roles } from '../auth/roles.guard';
 import { notificationConfig } from './notification.config';
@@ -25,7 +32,11 @@ export class NotificationsController {
 @Module({
   imports: [ScheduleModule.forRoot()],
   controllers: [NotificationsController],
-  providers: [WhatsAppNotificationService, PaymentReminderService, NotificationTriggerService],
+  providers: [
+    WhatsAppNotificationService,
+    PaymentReminderService,
+    NotificationTriggerService,
+  ],
   exports: [PaymentReminderService],
 })
 export class NotificationsModule {}

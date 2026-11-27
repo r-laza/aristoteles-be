@@ -6,7 +6,8 @@ export function notificationConfig(env: NodeJS.ProcessEnv = process.env) {
     appEnv: env.APP_ENV ?? 'local',
     enabled: env.WHATSAPP_ENABLED === 'true',
     provider: env.WHATSAPP_PROVIDER ?? 'aws',
-    reminderDays: Number.isInteger(parsedDays) && parsedDays > 0 ? parsedDays : 2,
+    reminderDays:
+      Number.isInteger(parsedDays) && parsedDays > 0 ? parsedDays : 2,
     region: env.AWS_REGION?.trim() ?? '',
     senderId: env.WHATSAPP_SENDER_ID?.trim() ?? '',
     templateName: env.WHATSAPP_TEMPLATE_NAME?.trim() ?? '',

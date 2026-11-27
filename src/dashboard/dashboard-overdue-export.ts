@@ -36,7 +36,9 @@ export async function overdueStudentsWorkbook(rows: OverdueExportRow[]) {
     { header: 'Cuotas vencidas', key: 'overdueInstallments', width: 17 },
     { header: 'Próximo vencimiento', key: 'nextDueDate', width: 22 },
   ];
-  const uniqueRows = [...new Map(rows.map((row) => [row.studentId, row])).values()];
+  const uniqueRows = [
+    ...new Map(rows.map((row) => [row.studentId, row])).values(),
+  ];
   for (const row of uniqueRows) {
     sheet.addRow({
       ...row,
@@ -47,7 +49,11 @@ export async function overdueStudentsWorkbook(rows: OverdueExportRow[]) {
   }
   sheet.getRow(1).eachCell((cell) => {
     cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF075985' } };
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF075985' },
+    };
     cell.alignment = { vertical: 'middle' };
   });
   sheet.getColumn('outstandingBalance').numFmt = '"S/" #,##0.00';

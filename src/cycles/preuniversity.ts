@@ -15,21 +15,32 @@ export function preuniversitySchedule(
   const remainder = totalCents % count;
   let year = startDate.getUTCFullYear();
   let month = startDate.getUTCMonth();
-  if (dueRule === PreuniversityDueRule.FIFTEENTH && startDate.getUTCDate() > 15) {
+  if (
+    dueRule === PreuniversityDueRule.FIFTEENTH &&
+    startDate.getUTCDate() > 15
+  ) {
     month += 1;
-    if (month > 11) { month = 0; year += 1; }
+    if (month > 11) {
+      month = 0;
+      year += 1;
+    }
   }
   return Array.from({ length: installments }, (_, index) => {
     const cursor = new Date(Date.UTC(year, month + index, 1));
-    const dueDay = dueRule === PreuniversityDueRule.FIFTEENTH
-      ? 15
-      : new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, 0)).getUTCDate();
+    const dueDay =
+      dueRule === PreuniversityDueRule.FIFTEENTH
+        ? 15
+        : new Date(
+            Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, 0),
+          ).getUTCDate();
     const cents = quotient + (BigInt(index) < remainder ? 1n : 0n);
     return {
       number: index + 1,
       period: cursor.toISOString().slice(0, 7),
       amount: new Prisma.Decimal(cents.toString()).div(100),
-      dueDate: new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth(), dueDay)),
+      dueDate: new Date(
+        Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth(), dueDay),
+      ),
     };
   });
 }
