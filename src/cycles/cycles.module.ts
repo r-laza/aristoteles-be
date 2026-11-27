@@ -98,12 +98,6 @@ export class CyclesController {
   @Get(':id/enrollments') enrollments(@Param('id', ParseIntPipe) id: number) {
     return this.cycles.enrollments(id);
   }
-  @Post(':id/enrollments') enroll(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() body: unknown,
-  ) {
-    return this.cycles.enroll(id, body);
-  }
   @Post('enrollments/:enrollmentId/transfer') transfer(
     @Param('enrollmentId', ParseIntPipe) enrollmentId: number,
     @Body() body: unknown,
@@ -197,5 +191,6 @@ export class PensionsController {
     BranchesController,
   ],
   providers: [CyclesService],
+  exports: [CyclesService],
 })
 export class CyclesModule {}

@@ -23,27 +23,7 @@ export class DashboardService {
     cycleId?: number;
     groupId?: number;
   }) {
-    const branches = await this.prisma.branch.findMany({
-      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-      select: { id: true, name: true },
-    });
-    if (!branches.length)
-      return {
-        branches,
-        branch: null,
-        cycles: [],
-        selectedCycleId: undefined,
-        cycleIds: [],
-        groups: [],
-        groupId: undefined,
-      };
-    const branch =
-      input.branchId === undefined
-        ? branches[0]
-        : branches.find((item) => item.id === input.branchId);
-    if (!branch) throw new NotFoundException('Branch not found');
     const cycles = await this.prisma.academicCycle.findMany({
-      where: { branches: { some: { branchId: branch.id } } },
       orderBy: [{ startDate: 'desc' }, { id: 'desc' }],
       select: {
         id: true,
@@ -54,21 +34,37 @@ export class DashboardService {
         endDate: true,
       },
     });
-    if (
-      input.cycleId !== undefined &&
-      !cycles.some((cycle) => cycle.id === input.cycleId)
-    )
-      throw new NotFoundException('Cycle not found for branch');
+    if (input.cycleId !== undefined && !cycles.some((cycle) => cycle.id === input.cycleId))
+      throw new NotFoundException('Cycle not found');
     const selectedCycleId =
       input.cycleId ??
       cycles.find((cycle) => cycle.status === AcademicCycleStatus.ACTIVE)?.id ??
       cycles[0]?.id;
     const cycleIds = selectedCycleId === undefined ? [] : [selectedCycleId];
+    const branches = cycleIds.length
+      ? await this.prisma.branch.findMany({
+          where: { cycles: { some: { academicCycleId: cycleIds[0] } } },
+          orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+          select: { id: true, name: true },
+        })
+      : [];
+    const branch =
+      input.branchId === undefined
+        ? null
+        : branches.find((item) => item.id === input.branchId);
+    if (input.branchId !== undefined && !branch)
+      throw new NotFoundException('Branch not found for cycle');
     const cycleGroups = cycleIds.length
       ? await this.prisma.cycleGroup.findMany({
-          where: { academicCycleId: { in: cycleIds }, branchId: branch.id },
+          where: {
+            academicCycleId: { in: cycleIds },
+            ...(branch ? { branchId: branch.id } : {}),
+          },
           orderBy: { reusableGroup: { name: 'asc' } },
-          select: { reusableGroup: { select: { id: true, name: true } } },
+          select: {
+            reusableGroup: { select: { id: true, name: true } },
+            branch: { select: { id: true, name: true } },
+          },
         })
       : [];
     const groupOptions = [
@@ -89,6 +85,7 @@ export class DashboardService {
       cycleIds,
       groups: groupOptions,
       groupId: input.groupId,
+      assignments: cycleGroups,
     };
   }
 
@@ -96,8 +93,8 @@ export class DashboardService {
     filters: Awaited<ReturnType<DashboardService['filters']>>,
   ) {
     return {
-      branchId: filters.branch!.id,
       academicCycleId: { in: filters.cycleIds },
+      ...(filters.branch ? { branchId: filters.branch.id } : {}),
       ...(filters.groupId === undefined
         ? {}
         : { group: { reusableGroupId: filters.groupId } }),
@@ -150,13 +147,14 @@ export class DashboardService {
       groups: filters.groups,
       selectedGroupId: input.groupId ?? null,
     };
-    if (!filters.branch || !filters.cycleIds.length)
+    if (!filters.cycleIds.length)
       return { ...metadata, dashboard: null };
     const enrollments = await this.prisma.enrollment.findMany({
       where: this.enrollmentWhere(filters),
       select: {
         ...this.enrollmentFinancialSelect(),
         studentId: true,
+        branch: { select: { id: true, name: true } },
         group: {
           select: { reusableGroup: { select: { id: true, name: true } } },
         },
@@ -179,6 +177,17 @@ export class DashboardService {
         startDate,
         endDate,
         enrollments,
+        branches: filters.branch ? [filters.branch] : filters.branches,
+        groupAssignments: filters.assignments
+          .filter(
+            (assignment) =>
+              filters.groupId === undefined ||
+              assignment.reusableGroup.id === filters.groupId,
+          )
+          .map((assignment) => ({
+            branch: assignment.branch,
+            group: assignment.reusableGroup,
+          })),
       },
       today,
     );
@@ -222,7 +231,7 @@ export class DashboardService {
     search: string;
   }) {
     const filters = await this.filters(input);
-    if (!filters.branch || !filters.cycleIds.length)
+    if (!filters.cycleIds.length)
       return overdueStudentsWorkbook([]);
     const search = input.search.trim();
     const enrollments = await this.prisma.enrollment.findMany({
@@ -330,7 +339,7 @@ export class DashboardService {
   ) {
     if (input.page < 1) throw new BadRequestException('Invalid page');
     const filters = await this.filters(input);
-    if (!filters.branch || !filters.cycleIds.length)
+    if (!filters.cycleIds.length)
       return { items: [], page: 1, pageSize: 20, total: 0, totalPages: 0 };
     const search = input.search.trim();
     const enrollments = await this.prisma.enrollment.findMany({
@@ -363,7 +372,10 @@ export class DashboardService {
       .flatMap((enrollment) => {
         const charges = obligations(enrollment, today);
         const status = accountStatus(charges, today) ?? 'PAID';
-        if (status !== selection.status) return [];
+        const matchesSelection =
+          status === selection.status ||
+          (selection.status === 'PENDING' && status === 'PARTIAL');
+        if (!matchesSelection) return [];
         const totalPaid = charges.reduce(
           (sum, charge) => sum.plus(charge.amountPaid),
           new Prisma.Decimal(0),
@@ -404,7 +416,7 @@ export class DashboardService {
     input: { branchId?: number; cycleId?: number; groupId?: number },
   ) {
     const filters = await this.filters(input);
-    if (!filters.branch || !filters.cycleIds.length)
+    if (!filters.cycleIds.length)
       throw new NotFoundException();
     const enrollment = await this.prisma.enrollment.findFirst({
       where: { id: enrollmentId, ...this.enrollmentWhere(filters) },

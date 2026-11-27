@@ -144,6 +144,12 @@ describe('Payment obligations', () => {
     expect(accountStatus([charge('2027-01-09', 0, 50)], '2027-01-10', 7)).toBe(
       'PAID',
     );
+    expect(accountStatus([charge('2027-01-11', 25, 25)], '2027-01-10', 7)).toBe(
+      'PARTIAL',
+    );
+    expect(accountStatus([charge('2027-02-10', 25, 25)], '2027-01-10', 7)).toBe(
+      'PARTIAL',
+    );
     expect(accountStatus([charge('2027-01-11')], '2027-01-10', 0)).toBe('PAID');
   });
 });

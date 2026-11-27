@@ -828,9 +828,23 @@ export class CyclesService {
     return this.prisma.student.findMany({
       where: {
         isActive: true,
-        academicEnrollments: { none: { academicCycleId: cycleId } },
+        academicEnrollments: {
+          none: {
+            academicCycle: { status: AcademicCycleStatus.ACTIVE },
+          },
+        },
       },
-      select: { id: true, fullName: true, dni: true },
+      select: {
+        id: true,
+        fullName: true,
+        dni: true,
+        representativeName: true,
+        representativeDocumentType: true,
+        representativeDocumentNumber: true,
+        relationship: true,
+        relationshipOther: true,
+        primaryPhone: true,
+      },
       orderBy: { fullName: 'asc' },
     });
   }
@@ -849,7 +863,11 @@ export class CyclesService {
       },
     }));
   }
-  async enroll(cycleId: number, body: unknown) {
+  async enroll(
+    cycleId: number,
+    body: unknown,
+    transaction?: Prisma.TransactionClient,
+  ) {
     const input = bodyObject(body);
     if ('discountAmount' in input || 'feeId' in input)
       throw new BadRequestException('Enrollment prices are cycle-defined');
@@ -858,31 +876,43 @@ export class CyclesService {
       branchId = id(input.branchId);
     const discountPercent = money(input.discountPercent ?? 0);
     const pensionDiscountPercent = money(input.pensionDiscountPercent ?? 0);
+    const pensionDiscountAmount = money(input.pensionDiscountAmount ?? 0);
     const discountReason =
       input.discountReason === undefined || input.discountReason === ''
         ? null
         : name(input.discountReason, 500);
-    try {
-      return await this.prisma.$transaction(async (tx) => {
+    const operation = async (tx: Prisma.TransactionClient) => {
         const cycle = await tx.academicCycle.findUnique({
           where: { id: cycleId },
           include: { fee: true },
         });
         if (!cycle) throw new NotFoundException();
         if (cycle.status !== AcademicCycleStatus.ACTIVE)
-          throw new ConflictException('Academic cycle is not active');
+          throw new ConflictException({ code: 'CYCLE_NOT_ACTIVE' });
         const student = await tx.student.findUnique({
           where: { id: studentId },
           select: { isActive: true },
         });
         if (!student || !student.isActive)
-          throw new BadRequestException('Student required');
+          throw new BadRequestException({ code: 'ENROLLMENT_STUDENT_REQUIRED' });
+        const activeEnrollment = await tx.enrollment.findFirst({
+          where: {
+            studentId,
+            academicCycleId: { not: cycleId },
+            academicCycle: { status: AcademicCycleStatus.ACTIVE },
+          },
+          select: { id: true },
+        });
+        if (activeEnrollment)
+          throw new ConflictException({
+            code: 'STUDENT_ACTIVE_CYCLE_ENROLLMENT',
+          });
         const group = await tx.cycleGroup.findUnique({
           where: { id: groupId },
           include: { pension: true },
         });
         if (!group || group.academicCycleId !== cycleId)
-          throw new BadRequestException('Group must belong to cycle');
+          throw new BadRequestException({ code: 'ENROLLMENT_GROUP_INVALID' });
         if (
           group.branchId !== branchId ||
           !(await tx.academicCycleBranch.findUnique({
@@ -891,8 +921,11 @@ export class CyclesService {
             },
           }))
         )
-          throw new BadRequestException('Branch unavailable for cycle');
-        const fee = cycle.fee;
+          throw new BadRequestException({ code: 'ENROLLMENT_BRANCH_INVALID' });
+        // Preuniversity enrollments have no module charge. A legacy fee
+        // relation must not block registration or affect its final amount.
+        const fee =
+          cycle.category === AcademicCycleCategory.SCHOOL ? cycle.fee : null;
         // Validity is a calendar date in the institution's timezone.
         const today = date(
           new Intl.DateTimeFormat('en-CA', {
@@ -903,29 +936,27 @@ export class CyclesService {
           }).format(new Date()),
         );
         if (
-          (cycle.category === AcademicCycleCategory.SCHOOL && !fee) ||
-          (fee &&
-            (fee.validFrom > today ||
-              (fee.validUntil && fee.validUntil < today)))
+          cycle.category === AcademicCycleCategory.SCHOOL &&
+          (!fee ||
+            fee.validFrom > today ||
+            (fee.validUntil !== null && fee.validUntil < today))
         )
-          throw new BadRequestException('Fee unavailable for this group');
+          throw new BadRequestException({ code: 'ENROLLMENT_FEE_UNAVAILABLE' });
         const baseAmount = fee?.amount ?? new Prisma.Decimal(0);
-        if (
-          discountPercent.greaterThan(100) ||
-          pensionDiscountPercent.greaterThan(100)
-        )
-          throw new BadRequestException('Invalid discount percentage');
+        if (!discountPercent.isZero() || !pensionDiscountPercent.isZero())
+          throw new BadRequestException(
+            'Percentage discounts are not allowed for new enrollments',
+          );
         if (!group.pension)
-          throw new BadRequestException('Group pension required');
-        const discountAmount = baseAmount
-          .mul(discountPercent)
-          .div(100)
-          .toDecimalPlaces(2);
+          throw new BadRequestException({ code: 'ENROLLMENT_PENSION_REQUIRED' });
         const pensionBaseAmount = group.pension.amount;
-        const pensionDiscountAmount = pensionBaseAmount
-          .mul(pensionDiscountPercent)
-          .div(100)
-          .toDecimalPlaces(2);
+        if (
+          pensionDiscountAmount.isNegative() ||
+          pensionDiscountAmount.greaterThan(pensionBaseAmount)
+        )
+          throw new BadRequestException({
+            code: 'ENROLLMENT_PENSION_DISCOUNT_INVALID',
+          });
         const pensionAmount = pensionBaseAmount.minus(pensionDiscountAmount);
         let preuniversityInstallments: number | null = null;
         let preuniversityDueRule: PreuniversityDueRule | null = null;
@@ -991,16 +1022,16 @@ export class CyclesService {
             groupId,
             feeId: fee?.id ?? null,
             baseAmount,
-            discountPercent,
-            discountAmount,
+            discountPercent: null,
+            discountAmount: 0,
             discountReason,
-            finalAmount: baseAmount.minus(discountAmount),
+            finalAmount: baseAmount,
             enrollmentFeeName: fee?.name ?? null,
             pensionName: group.pension.name,
             pensionStartDate: cycle.startDate,
             pensionEndDate: cycle.endDate,
             pensionBaseAmount,
-            pensionDiscountPercent,
+            pensionDiscountPercent: null,
             pensionDiscountAmount,
             pensionAmount,
             pensionDueDay:
@@ -1011,7 +1042,13 @@ export class CyclesService {
           },
           include: enrollmentInclude,
         });
-      });
+    };
+    try {
+      return transaction
+        ? await operation(transaction)
+        : await this.prisma.$transaction(operation, {
+            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          });
     } catch (error) {
       this.rethrowConflict(error);
     }
@@ -1061,12 +1098,16 @@ export class CyclesService {
           throw new BadRequestException('Enrollment location unchanged');
         if (!destination.pension)
           throw new BadRequestException('Group pension required');
-        const discountPercent =
-          enrollment.pensionDiscountPercent ?? new Prisma.Decimal(0);
-        const discountAmount = destination.pension.amount
-          .mul(discountPercent)
-          .div(100)
-          .toDecimalPlaces(2);
+        const discountAmount = enrollment.pensionDiscountPercent
+          ? destination.pension.amount
+              .mul(enrollment.pensionDiscountPercent)
+              .div(100)
+              .toDecimalPlaces(2)
+          : (enrollment.pensionDiscountAmount ?? new Prisma.Decimal(0));
+        if (discountAmount.greaterThan(destination.pension.amount))
+          throw new BadRequestException(
+            'Pension discount exceeds destination pension',
+          );
         const currentPeriod = transferDate.toISOString().slice(0, 7);
         const paidPeriods = new Set(
           enrollment.payments
@@ -1134,7 +1175,7 @@ export class CyclesService {
       error instanceof Prisma.PrismaClientKnownRequestError &&
       ['P2002', 'P2003', 'P2034'].includes(error.code)
     )
-      throw new ConflictException('Already exists');
+      throw new ConflictException({ code: 'ENROLLMENT_ALREADY_EXISTS' });
     throw error;
   }
 }

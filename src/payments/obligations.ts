@@ -51,7 +51,8 @@ export function paymentStatus(
 }
 
 // Account-level status shared by the dashboard and Gestión de pagos.
-// Any overdue unpaid charge wins over future pending installments.
+// Overdue debt wins, followed by partial payments. A fully unpaid obligation
+// is pending only when it is currently due or inside the configured window.
 export function accountStatus(
   charges: ReturnType<typeof obligations>,
   today = institutionToday(),
@@ -64,6 +65,8 @@ export function accountStatus(
     pending.some((charge) => charge.dueDate !== null && charge.dueDate < today)
   )
     return 'OVERDUE';
+  if (pending.some((charge) => charge.amountPaid.greaterThan(0)))
+    return 'PARTIAL';
   const warningThrough = calendarDatePlusDays(today, warningDays);
   if (
     pending.some(

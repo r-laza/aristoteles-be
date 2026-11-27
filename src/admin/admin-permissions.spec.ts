@@ -160,11 +160,21 @@ describe('Administrator permissions (HTTP, isolated database boundary)', () => {
     await app?.close();
   });
 
-  it('allows regular administrators to read lists and the dashboard, but not anonymous or teacher requests', async () => {
-    for (const path of ['/admin/people', '/admin/users', '/admin/dashboard']) {
+  it('allows regular administrators to list only people while reserving account and dashboard APIs for Main', async () => {
+    const people = await request(app.getHttpServer())
+      .get('/api/admin/people')
+      .set('Cookie', 'aristoteles_session=regular')
+      .expect(200);
+    expect(people.body).toEqual([]);
+    expect(userStore.findMany).not.toHaveBeenCalled();
+    for (const path of ['/admin/users', '/admin/dashboard']) {
       await request(app.getHttpServer())
         .get(`/api${path}`)
         .set('Cookie', 'aristoteles_session=regular')
+        .expect(403);
+      await request(app.getHttpServer())
+        .get(`/api${path}`)
+        .set('Cookie', 'aristoteles_session=main')
         .expect(200);
       await request(app.getHttpServer()).get(`/api${path}`).expect(401);
       await request(app.getHttpServer())
@@ -199,12 +209,12 @@ describe('Administrator permissions (HTTP, isolated database boundary)', () => {
     expect(userStore.update).not.toHaveBeenCalled();
   });
 
-  it('preserves regular administrator management of teachers and blocks promotion to administrator', async () => {
+  it('blocks regular administrator management of teachers and administrators', async () => {
     await post('/admin/people/users/3')
       .send({ ...edit, role: 'ADMIN' })
       .expect(403);
-    await post('/admin/people/users/3').send(edit).expect(201);
-    expect(users[2].fullName).toBe('Updated');
+    await post('/admin/people/users/3').send(edit).expect(403);
+    expect(users[2].fullName).toBe('teacher');
     expect(users[2].role).toBe('TEACHER');
   });
 

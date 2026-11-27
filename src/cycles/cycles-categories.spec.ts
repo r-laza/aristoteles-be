@@ -125,7 +125,10 @@ describe('Preuniversitario student installment plans', () => {
         findUniqueOrThrow: jest.fn().mockResolvedValue({ branchId: 3 }),
       },
       academicCycleBranch: { findUnique: jest.fn().mockResolvedValue({}) },
-      enrollment: { create },
+      enrollment: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create,
+      },
     };
     const prisma = { $transaction: jest.fn(async (callback) => callback(tx)) };
     return { service: new CyclesService(prisma as never), create };
@@ -147,8 +150,7 @@ describe('Preuniversitario student installment plans', () => {
         studentId: 4,
         groupId: 20,
         branchId: 3,
-        discountPercent: 0,
-        pensionDiscountPercent: 0,
+        pensionDiscountAmount: 0,
         preuniversityInstallments: installments,
         preuniversityDueRule: dueRule,
       });
@@ -170,8 +172,7 @@ describe('Preuniversitario student installment plans', () => {
         studentId: 4,
         groupId: 20,
         branchId: 3,
-        discountPercent: 0,
-        pensionDiscountPercent: 0,
+        pensionDiscountAmount: 0,
         preuniversityInstallments: 1,
         preuniversityDueRule: PreuniversityDueRule.FIFTEENTH,
       }),

@@ -20,13 +20,16 @@ import {
   Relationship,
 } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
-import { Roles } from '../auth/roles.guard';
+import { AdminLevels, Roles } from '../auth/roles.guard';
 import {
   publicUserSelect,
   type AuthRequest,
   type PublicUser,
 } from '../auth/auth.types';
-import { assertCanManageAdministrators } from '../auth/admin-permissions';
+import {
+  assertCanManageAdministrators,
+  canManageAdministrators,
+} from '../auth/admin-permissions';
 import { validateCredentials } from '../auth/validation';
 import { hashPassword } from '../auth/password';
 
@@ -156,16 +159,16 @@ function dateOnly(value: unknown, field: string): Date {
 export class AdminPeopleService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async list() {
-    const [students, staff] = await Promise.all([
-      this.prisma.student.findMany({
-        include: { user: { select: publicUserSelect } },
-      }),
-      this.prisma.user.findMany({
-        where: { role: { in: ['ADMIN', 'TEACHER'] } },
-        select: publicUserSelect,
-      }),
-    ]);
+  async list(actor: PublicUser) {
+    const students = await this.prisma.student.findMany({
+      include: { user: { select: publicUserSelect } },
+    });
+    const staff = canManageAdministrators(actor)
+      ? await this.prisma.user.findMany({
+          where: { role: { in: ['ADMIN', 'TEACHER'] } },
+          select: publicUserSelect,
+        })
+      : [];
     return [
       ...students.map((student) => this.studentPerson(student)),
       ...staff.map((user) => ({
@@ -178,6 +181,7 @@ export class AdminPeopleService {
   async create(body: unknown, actor: PublicUser) {
     const input = object(body);
     const role = input.role;
+    if (role !== 'STUDENT') assertCanManageAdministrators(actor);
     if (role !== 'ADMIN' && input.adminLevel !== undefined)
       throw new BadRequestException(
         'Administrator level requires administrator role',
@@ -234,7 +238,7 @@ export class AdminPeopleService {
           include: { user: { select: publicUserSelect } },
         });
         if (updated.userId) {
-          if (updated.user?.role === 'ADMIN')
+          if (updated.user && updated.user.role !== 'STUDENT')
             throw new ForbiddenException({
               code: 'ADMIN_ACCOUNT_WRONG_ENDPOINT',
             });
@@ -250,6 +254,7 @@ export class AdminPeopleService {
   }
 
   async updateUser(userId: number, body: unknown, actor: PublicUser) {
+    assertCanManageAdministrators(actor);
     const input = object(body);
     if (typeof input.isActive !== 'boolean')
       throw new BadRequestException('Invalid status');
@@ -325,7 +330,7 @@ export class AdminPeopleService {
       include: { user: true },
     });
     if (!student) throw new NotFoundException();
-    if (student.user?.role === 'ADMIN')
+    if (student.user && student.user.role !== 'STUDENT')
       throw new ForbiddenException({ code: 'ADMIN_ACCOUNT_WRONG_ENDPOINT' });
     if (typeof input.isActive !== 'boolean')
       throw new BadRequestException('Invalid status');
@@ -498,6 +503,7 @@ export class AdminPeopleService {
 }
 @Controller('admin/users')
 @Roles('ADMIN')
+@AdminLevels('MAIN')
 export class AdminUsersController {
   constructor(private readonly users: AdminUsersService) {}
   @Get()
@@ -515,8 +521,8 @@ export class AdminUsersController {
 export class AdminPeopleController {
   constructor(private readonly people: AdminPeopleService) {}
   @Get()
-  list() {
-    return this.people.list();
+  list(@Req() request: AuthRequest) {
+    return this.people.list(request.user);
   }
   @Post()
   create(@Body() body: unknown, @Req() request: AuthRequest) {

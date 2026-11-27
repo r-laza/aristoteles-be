@@ -14,6 +14,7 @@ import {
 } from '@prisma/client';
 import { accountStatus, institutionToday, obligations } from './obligations';
 import { PrismaService } from '../database/prisma.service';
+import { CyclesService } from '../cycles/cycles.service';
 import {
   safeFolderName,
   sanitizedStorageKey,
@@ -82,6 +83,7 @@ export class PaymentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
+    private readonly cycles: CyclesService,
   ) {}
   async balances(cycleId: number) {
     if (
@@ -448,7 +450,12 @@ export class PaymentsService {
     });
     return this.receipt(paymentId);
   }
-  async register(enrollmentId: number, body: unknown) {
+  async register(
+    enrollmentId: number,
+    body: unknown,
+    collectorId: number,
+    transaction?: Prisma.TransactionClient,
+  ) {
     if (!body || typeof body !== 'object' || Array.isArray(body))
       throw new BadRequestException();
     const input = body as Record<string, unknown>;
@@ -551,8 +558,7 @@ export class PaymentsService {
     const reference = optionalText(input.reference, 200),
       notes = optionalText(input.notes, 1000);
     const payer = payerData(input);
-    return this.prisma.$transaction(
-      async (tx) => {
+    const operation = async (tx: Prisma.TransactionClient) => {
         // Serialize payments for this enrollment so concurrent requests cannot overpay.
         const locked = await tx.$queryRaw<
           { id: number }[]
@@ -605,6 +611,8 @@ export class PaymentsService {
             await tx.payment.create({
               data: {
                 enrollmentId,
+                collectorId,
+                registeredBranchId: enrollment.branchId,
                 paymentType: charge.paymentType,
                 period: charge.period,
                 amount: requested.length > 1 ? charge.balance : amount,
@@ -626,8 +634,36 @@ export class PaymentsService {
           totalAmount: amount,
           obligationCount: payments.length,
         };
+    };
+    return transaction
+      ? operation(transaction)
+      : this.prisma.$transaction(operation, {
+          isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+        });
+  }
+
+  async registerInitial(
+    cycleId: number,
+    enrollmentBody: unknown,
+    paymentBody: unknown,
+    collectorId: number,
+  ) {
+    return this.prisma.$transaction(
+      async (tx) => {
+        const enrollment = await this.cycles.enroll(
+          cycleId,
+          enrollmentBody,
+          tx,
+        );
+        const registration = await this.register(
+          enrollment.id,
+          paymentBody,
+          collectorId,
+          tx,
+        );
+        return { ...registration, enrollmentId: enrollment.id };
       },
-      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );
   }
 }

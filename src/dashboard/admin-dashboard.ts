@@ -17,6 +17,7 @@ type DashboardEnrollment = Omit<
 > & {
   id: number;
   studentId: number;
+  branch?: { id: number; name: string };
   group: { reusableGroup: { id: number; name: string } };
   payments: (Parameters<typeof obligations>[0]['payments'][number] & {
     id: number;
@@ -32,6 +33,11 @@ export type ActiveCycleDashboardInput = {
   startDate: Date;
   endDate: Date;
   enrollments: DashboardEnrollment[];
+  branches?: { id: number; name: string }[];
+  groupAssignments?: {
+    branch: { id: number; name: string };
+    group: { id: number; name: string };
+  }[];
 };
 
 const zero = () => new Prisma.Decimal(0);
@@ -141,6 +147,46 @@ export function aggregateAdminDashboard(
         left.name.localeCompare(right.name, 'es') || left.id - right.id,
     )
     .map(({ id, name, students }) => ({ id, name, count: students.size }));
+  const comparisonBranches = cycle.branches ?? [];
+  const comparisonGroups = new Map<
+    number,
+    { id: number; name: string; branchIds: Set<number> }
+  >();
+  for (const assignment of cycle.groupAssignments ?? []) {
+    const group = comparisonGroups.get(assignment.group.id) ?? {
+      ...assignment.group,
+      branchIds: new Set<number>(),
+    };
+    group.branchIds.add(assignment.branch.id);
+    comparisonGroups.set(group.id, group);
+  }
+  const comparisonCounts = new Map<string, Set<number>>();
+  for (const enrollment of uniqueEnrollments) {
+    if (!enrollment.branch) continue;
+    const key = `${enrollment.group.reusableGroup.id}:${enrollment.branch.id}`;
+    const students = comparisonCounts.get(key) ?? new Set<number>();
+    students.add(enrollment.studentId);
+    comparisonCounts.set(key, students);
+  }
+  const enrollmentComparison = {
+    branches: comparisonBranches,
+    rows: [...comparisonGroups.values()]
+      .sort((left, right) => left.name.localeCompare(right.name, 'es'))
+      .map((group) => {
+        const counts = comparisonBranches.map((branch) => ({
+          branchId: branch.id,
+          count: group.branchIds.has(branch.id)
+            ? (comparisonCounts.get(`${group.id}:${branch.id}`)?.size ?? 0)
+            : 0,
+        }));
+        return {
+          groupId: group.id,
+          groupName: group.name,
+          counts,
+          total: counts.reduce((sum, item) => sum + item.count, 0),
+        };
+      }),
+  };
   return {
     activeCycle: {
       id: cycle.id,
@@ -176,6 +222,7 @@ export function aggregateAdminDashboard(
           ? groupDistribution
           : [],
     },
+    enrollmentComparison,
     paymentMethods: [...methods].map(([method, total]) => ({
       method,
       amount: total.toFixed(2),

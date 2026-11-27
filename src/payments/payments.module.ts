@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -7,12 +8,14 @@ import {
   ParseIntPipe,
   Post,
   Query,
+  Req,
   Res,
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
+import type { AuthRequest } from '../auth/auth.types';
 import { Roles } from '../auth/roles.guard';
 import { PaymentsService } from './payments.service';
 import { StorageModule } from '../storage/storage.module';
@@ -20,6 +23,9 @@ import {
   PAYMENT_EVIDENCE_MAX_BYTES,
   PAYMENT_EVIDENCE_MIME_TYPES,
 } from '../storage/storage.service';
+import { RevenueController } from './revenue.controller';
+import { RevenueService } from './revenue.service';
+import { CyclesModule } from '../cycles/cycles.module';
 
 @Controller('admin/payments')
 @Roles('ADMIN')
@@ -59,8 +65,23 @@ export class PaymentsController {
   @Post('enrollments/:id') register(
     @Param('id', ParseIntPipe) id: number,
     @Body() body: unknown,
+    @Req() request: AuthRequest,
   ) {
-    return this.payments.register(id, body);
+    return this.payments.register(id, body, request.user.id);
+  }
+  @Post('initial-enrollment') registerInitial(
+    @Body() body: { cycleId?: unknown; enrollment?: unknown; payment?: unknown },
+    @Req() request: AuthRequest,
+  ) {
+    const cycleId = Number(body?.cycleId);
+    if (!Number.isSafeInteger(cycleId) || cycleId <= 0)
+      throw new BadRequestException();
+    return this.payments.registerInitial(
+      cycleId,
+      body.enrollment,
+      body.payment,
+      request.user.id,
+    );
   }
   @Post(':id/evidence')
   @UseInterceptors(
@@ -83,8 +104,8 @@ export class PaymentsController {
   }
 }
 @Module({
-  imports: [StorageModule],
-  controllers: [PaymentsController],
-  providers: [PaymentsService],
+  imports: [StorageModule, CyclesModule],
+  controllers: [PaymentsController, RevenueController],
+  providers: [PaymentsService, RevenueService],
 })
 export class PaymentsModule {}

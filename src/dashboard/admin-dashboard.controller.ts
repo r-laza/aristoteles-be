@@ -8,11 +8,12 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { institutionToday } from '../payments/obligations';
-import { Roles } from '../auth/roles.guard';
+import { AdminLevels, Roles } from '../auth/roles.guard';
 import { DashboardService } from './dashboard.service';
 
 @Controller('admin/dashboard')
 @Roles('ADMIN')
+@AdminLevels('MAIN')
 export class AdminDashboardController {
   constructor(private readonly dashboardService: DashboardService) {}
 

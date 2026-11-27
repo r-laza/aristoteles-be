@@ -16,7 +16,7 @@ const decimal = (value: string | number) => new Prisma.Decimal(value);
 describe('Admin dashboard aggregation', () => {
   it('returns a clean empty result when no cycle is active', async () => {
     const service = new DashboardService({
-      branch: { findMany: jest.fn().mockResolvedValue([]) },
+      academicCycle: { findMany: jest.fn().mockResolvedValue([]) },
     } as never);
     await expect(service.getAdminDashboard()).resolves.toMatchObject({
       selectedBranchId: null,
@@ -38,9 +38,7 @@ describe('Admin dashboard aggregation', () => {
       status: 404,
     });
     expect(findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { branches: { some: { branchId: 1 } } },
-      }),
+      expect.not.objectContaining({ where: expect.anything() }),
     );
   });
 
@@ -77,7 +75,7 @@ describe('Admin dashboard aggregation', () => {
       enrollment: { findMany: jest.fn().mockResolvedValue([]) },
     } as never);
     const result = await service.getAdminDashboard();
-    expect(result.selectedBranchId).toBe(8);
+    expect(result.selectedBranchId).toBeNull();
     expect(result.selectedCycleId).toBe(2);
     expect(result.cycles.map((cycle) => cycle.status)).toEqual([
       'CLOSED',
@@ -116,10 +114,19 @@ describe('Admin dashboard aggregation', () => {
         category: AcademicCycleCategory.SCHOOL,
         startDate: new Date('2027-01-15T00:00:00.000Z'),
         endDate: new Date('2027-03-31T00:00:00.000Z'),
+        branches: [
+          { id: 1, name: 'Centro' },
+          { id: 2, name: 'Huánuco' },
+        ],
+        groupAssignments: [
+          { branch: { id: 1, name: 'Centro' }, group: { id: 5, name: 'Kids' } },
+          { branch: { id: 2, name: 'Huánuco' }, group: { id: 6, name: 'Tigres' } },
+        ],
         enrollments: [
           {
             id: 1,
             studentId: 11,
+            branch: { id: 1, name: 'Centro' },
             group: { reusableGroup: { id: 5, name: 'Kids' } },
             finalAmount: decimal(100),
             pensionAmount: decimal(50),
@@ -150,6 +157,7 @@ describe('Admin dashboard aggregation', () => {
           {
             id: 2,
             studentId: 12,
+            branch: { id: 2, name: 'Huánuco' },
             group: { reusableGroup: { id: 6, name: 'Tigres' } },
             finalAmount: decimal(80),
             pensionAmount: null,
@@ -200,6 +208,32 @@ describe('Admin dashboard aggregation', () => {
         { id: 6, name: 'Tigres', count: 1 },
       ],
       preuniversity: [],
+    });
+    expect(result.enrollmentComparison).toEqual({
+      branches: [
+        { id: 1, name: 'Centro' },
+        { id: 2, name: 'Huánuco' },
+      ],
+      rows: [
+        {
+          groupId: 5,
+          groupName: 'Kids',
+          counts: [
+            { branchId: 1, count: 1 },
+            { branchId: 2, count: 0 },
+          ],
+          total: 1,
+        },
+        {
+          groupId: 6,
+          groupName: 'Tigres',
+          counts: [
+            { branchId: 1, count: 0 },
+            { branchId: 2, count: 1 },
+          ],
+          total: 1,
+        },
+      ],
     });
     expect(result.paymentMethods).toEqual([
       { method: 'CASH', amount: '100.00' },
@@ -329,7 +363,10 @@ describe('Admin dashboard aggregation', () => {
     };
     const cycleGroups = jest
       .fn()
-      .mockResolvedValue([{ reusableGroup: { id: 3, name: 'Kids' } }]);
+      .mockResolvedValue([{
+        reusableGroup: { id: 3, name: 'Kids' },
+        branch: { id: 8, name: 'Huánuco' },
+      }]);
     const service = new DashboardService({
       branch: {
         findMany: jest.fn().mockResolvedValue([
@@ -497,7 +534,10 @@ describe('Admin dashboard aggregation', () => {
       cycleGroup: {
         findMany: jest
           .fn()
-          .mockResolvedValue([{ reusableGroup: { id: 3, name: 'A' } }]),
+          .mockResolvedValue([{
+            reusableGroup: { id: 3, name: 'A' },
+            branch: { id: 1, name: 'Centro' },
+          }]),
       },
       enrollment: { findMany },
     } as never);
